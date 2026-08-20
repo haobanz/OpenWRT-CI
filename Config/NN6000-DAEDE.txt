@@ -1,0 +1,54 @@
+# Link NN6000 v2 / Qualcomm IPQ60XX
+CONFIG_TARGET_qualcommax=y
+CONFIG_TARGET_qualcommax_ipq60xx=y
+CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y
+
+# Build one device profile instead of the multi-device image
+CONFIG_TARGET_MULTI_PROFILE=n
+CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+CONFIG_TARGET_ROOTFS_INITRAMFS=n
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+CONFIG_FEED_video=n
+
+# Proxy components
+CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_dae=y
+CONFIG_PACKAGE_daed=y
+CONFIG_PACKAGE_luci-app-daede=y
+
+# daed kernel and geodata dependencies
+CONFIG_PACKAGE_kmod-sched-core=y
+CONFIG_PACKAGE_kmod-sched-bpf=y
+CONFIG_PACKAGE_kmod-veth=y
+CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-wireguard=y
+CONFIG_PACKAGE_v2ray-geoip=y
+CONFIG_PACKAGE_v2ray-geosite=y
+CONFIG_PACKAGE_vmlinux-btf=y
+CONFIG_KERNEL_CGROUP_BPF=y
+CONFIG_KERNEL_XDP_SOCKETS=y
+# The NN6000 v2 kernel slot is 6 MiB. Keep BTF detached so it does not
+# inflate the boot kernel; dae/daed use the vmlinux-btf package instead.
+CONFIG_KERNEL_DEBUG_INFO=n
+CONFIG_KERNEL_DEBUG_INFO_REDUCED=n
+CONFIG_KERNEL_DEBUG_INFO_BTF=n
+CONFIG_KERNEL_DEBUG_INFO_BTF_MODULES=n
+CONFIG_DAE_USE_VMLINUX_BTF=y
+CONFIG_DAED_USE_VMLINUX_BTF=y
+CONFIG_BPF_TOOLCHAIN_BUILD_LLVM=y
+CONFIG_USE_LLVM_BUILD=y
+
+# Basic LuCI/runtime tools
+CONFIG_PACKAGE_luci=y
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_ca-bundle=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ip-full=y
+
+# Keep the image free of the removed proxy stack
+# CONFIG_PACKAGE_luci-app-homeproxy is not set
+# CONFIG_PACKAGE_sing-box is not set

@@ -1,0 +1,10 @@
+--- a/feeds/packages/lang/ruby/Makefile
++++ b/feeds/packages/lang/ruby/Makefile
+@@ -93,7 +93,8 @@ CONFIGURE_VARS += XLDFLAGS="$(TARGET_LDFLAGS)"
+ MAKE_FLAGS += \
+ 	DESTDIR="$(PKG_INSTALL_DIR)" \
+-	SHELL="/bin/bash"
++	SHELL="/bin/bash" \
++	CPP="$(TARGET_CC) -E -P"
+ 
+ define Build/InstallDev

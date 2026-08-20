@@ -52,6 +52,24 @@ https://drive.wrt.moe/uboot/mediatek
 
 MEDIATEK系列、QUALCOMMAX系列、ROCKCHIP系列、X86系列。
 
+# Link NN6000 v2 自用构建
+
+本仓库新增 `NN6000-DAEDE` 手动构建流程，目标为 `Link NN6000 v2`
+（`qualcommax/ipq60xx`）。构建基于 `VIKINGYFY/immortalwrt`，内置
+OpenClash、dae、daed、BPF/XDP 内核模块，以及匹配当前内核的 detached
+`vmlinux-btf` 包；HomeProxy 和 sing-box 未选入。
+
+固件与校验和发布在
+[NN6000-v2-20260820 Release](https://github.com/haobanz/OpenWRT-CI/releases/tag/NN6000-v2-20260820)：
+
+- `immortalwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin`
+  SHA256: `4ce96c40e7bfe57edf4908220579d8377b4fd0c2d1b6003bbec86911f7a6b241`
+- `immortalwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-factory.bin`
+  SHA256: `6acca3ced417e1ffde968d3a5e56f01c8244d7b38e32894868bb0aa378277940`
+
+普通升级请使用 `sysupgrade.bin`；`factory.bin` 仅用于设备初始刷写或恢复流程。
+刷机前请先备份路由器配置，确认设备型号为 Link NN6000 v2。
+
 # 目录简要说明
 
 workflows——自定义CI配置

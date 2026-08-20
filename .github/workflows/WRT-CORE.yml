@@ -159,7 +159,11 @@ jobs:
         run: |
           cd ./wrt/package/
 
-          $GITHUB_WORKSPACE/Scripts/Packages.sh
+          PACKAGE_SCRIPT="$GITHUB_WORKSPACE/Scripts/Packages.sh"
+          if [ -f "$GITHUB_WORKSPACE/Scripts/Packages-$WRT_CONFIG.sh" ]; then
+            PACKAGE_SCRIPT="$GITHUB_WORKSPACE/Scripts/Packages-$WRT_CONFIG.sh"
+          fi
+          bash "$PACKAGE_SCRIPT"
           $GITHUB_WORKSPACE/Scripts/Handles.sh
 
       - name: Custom Settings
@@ -169,7 +173,11 @@ jobs:
           if [[ "${WRT_CONFIG,,}" == *"test"* ]]; then
             cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt >> .config
           else
-            cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt $GITHUB_WORKSPACE/Config/GENERAL.txt >> .config
+            GENERAL_CONFIG="$GITHUB_WORKSPACE/Config/GENERAL.txt"
+            if [ -f "$GITHUB_WORKSPACE/Config/GENERAL-$WRT_CONFIG.txt" ]; then
+              GENERAL_CONFIG="$GITHUB_WORKSPACE/Config/GENERAL-$WRT_CONFIG.txt"
+            fi
+            cat "$GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt" "$GENERAL_CONFIG" >> .config
           fi
 
           $GITHUB_WORKSPACE/Scripts/Settings.sh

@@ -1,0 +1,2 @@
+# Dedicated NN6000 v2 profile. Do not add HomeProxy or sing-box here.
+CONFIG_PACKAGE_luci-theme-aurora=y
