@@ -72,6 +72,21 @@ jobs:
           path: immortalwrt-local
           fetch-depth: 1
 
+      - name: Restore build cache
+        id: build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            immortalwrt-local/dl
+            immortalwrt-local/.ccache
+            immortalwrt-local/staging_dir/host*
+            immortalwrt-local/staging_dir/tool*
+            immortalwrt-local/build_dir/host*
+            immortalwrt-local/build_dir/tool*
+          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile') }}
+          restore-keys: |
+            daede-nn6000-${{ runner.os }}-
+
       - name: Initialize build environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -79,6 +94,9 @@ jobs:
           sudo -E apt-get update
           sudo -E apt-get install -y dos2unix libfuse-dev
           sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt-get install -y dwarves
+          command -v pahole
+          pahole --version
           sudo -E timedatectl set-timezone Asia/Shanghai || true
 
       - name: Record build revision
@@ -92,6 +110,19 @@ jobs:
           JOBS: 8
           SKIP_FEEDS: 0
         run: bash Scripts/Build-NN6000-DAEDE.sh
+
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            immortalwrt-local/dl
+            immortalwrt-local/.ccache
+            immortalwrt-local/staging_dir/host*
+            immortalwrt-local/staging_dir/tool*
+            immortalwrt-local/build_dir/host*
+            immortalwrt-local/build_dir/tool*
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
 
       - name: Collect release files
         shell: bash
