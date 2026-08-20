@@ -1,82 +1,58 @@
-# 高质量<免费>交流群
+# DAEDE 自用固件
 
-点击链接加入群聊【IPQ技术讨论群】：https://qm.qq.com/q/v7nMhzB4oU
-该群为普通交流群。
+这是一个独立维护的 ImmortalWrt DAED/dae 固件项目，不再跟随原
+OpenWRT-CI 的通用平台编译逻辑。
 
-# 高质量<付费>中转站
+## 当前目标
 
-点击链接加入群聊【LiBwrt-Ai学习】：https://qm.qq.com/q/HTa7OiWNCU
-该群为AI中转站群。
+当前只维护 `Link NN6000 v2`：
 
-# 本地编译器
+- Target: `qualcommax/ipq60xx`
+- Device: `link_nn6000-v2`
+- OpenClash、dae、daed、luci-app-daede
+- `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
+- 与目标内核匹配的 detached `vmlinux-btf`
+- 不包含 HomeProxy 和 sing-box
 
-https://github.com/VIKINGYFY/OWRT-Tools.git
+Release 同时提供设备固件和与当前内核匹配的 DAED/dae APK 包。其他设备
+只有在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会
+直接套用原仓库的通用配置。
 
-# 自用修改版插件
+## 自动构建
 
-https://github.com/VIKINGYFY/packages.git
+[`DAEDE-Build.yml`](.github/workflows/DAEDE-Build.yml) 每 6 小时检查
+`VIKINGYFY/immortalwrt` 的 `main` 分支。检测到上游提交变化后，调用本仓库
+自己的 `Build-NN6000-DAEDE.sh`，构建 NN6000 v2 固件和 DAED 依赖包，并创建
+一个新的 GitHub Release。
 
-# OpenWRT-CI
+构建失败不会更新提交基线，下一轮会自动重试。也可以在 Actions 中手动
+运行该 workflow，手动运行会强制构建一次。
 
-官方版：
+## 最新 Release
 
-https://github.com/immortalwrt/immortalwrt.git
+[NN6000-v2-20260820](https://github.com/haobanz/OpenWRT-CI/releases/tag/NN6000-v2-20260820)
 
-自用版：
+普通升级使用 `squashfs-sysupgrade.bin`；`factory.bin` 只用于初始刷写或
+恢复流程。刷机前请备份路由器配置，并确认设备型号为 Link NN6000 v2。
 
-https://github.com/VIKINGYFY/immortalwrt.git
+## 本地编译
 
-# U-BOOT
+源码和构建目录使用纯 ASCII 路径：
 
-高通版-沉心：
+`/home/moran/DEV/Custom_OpenClash_Rules`
 
-https://github.com/chenxin527/uboot-qsdk12.5-build.git
+```sh
+cd /home/moran/DEV/Custom_OpenClash_Rules/OpenWRT-CI-local
+HOST_DEPS_DIR=/tmp/openwrt-host-deps/root JOBS=8 \
+  bash Scripts/Build-NN6000-DAEDE.sh
+```
 
-高通版-小猪：
+生成物位于：
 
-https://github.com/1980490718/u-boot-2016.git
+`immortalwrt-local/bin/targets/qualcommax/ipq60xx`
 
-联发科-全新版：
+## 自维护规则
 
-https://github.com/VIKINGYFY/UBOOT-CI/releases
-
-联发科-官方版：
-
-https://drive.wrt.moe/uboot/mediatek
-
-# 固件简要说明
-
-固件每天早上5点自动编译。
-
-固件信息里的时间为编译开始的时间，方便核对上游源码提交时间。
-
-MEDIATEK系列、QUALCOMMAX系列、ROCKCHIP系列、X86系列。
-
-# Link NN6000 v2 自用构建
-
-本仓库新增 `NN6000-DAEDE` 手动构建流程，目标为 `Link NN6000 v2`
-（`qualcommax/ipq60xx`）。构建基于 `VIKINGYFY/immortalwrt`，内置
-OpenClash、dae、daed、BPF/XDP 内核模块，以及匹配当前内核的 detached
-`vmlinux-btf` 包；HomeProxy 和 sing-box 未选入。
-
-固件与校验和发布在
-[NN6000-v2-20260820 Release](https://github.com/haobanz/OpenWRT-CI/releases/tag/NN6000-v2-20260820)：
-
-- `immortalwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-sysupgrade.bin`
-  SHA256: `4ce96c40e7bfe57edf4908220579d8377b4fd0c2d1b6003bbec86911f7a6b241`
-- `immortalwrt-qualcommax-ipq60xx-link_nn6000-v2-squashfs-factory.bin`
-  SHA256: `6acca3ced417e1ffde968d3a5e56f01c8244d7b38e32894868bb0aa378277940`
-
-普通升级请使用 `sysupgrade.bin`；`factory.bin` 仅用于设备初始刷写或恢复流程。
-刷机前请先备份路由器配置，确认设备型号为 Link NN6000 v2。
-
-# 目录简要说明
-
-workflows——自定义CI配置
-
-Scripts——自定义脚本
-
-Config——自定义配置
-
-#
-[![Stargazers over time](https://starchart.cc/VIKINGYFY/OpenWRT-CI.svg?variant=adaptive)](https://starchart.cc/VIKINGYFY/OpenWRT-CI)
+ImmortalWrt 上游可以自动触发重新编译；daed/dae 使用的 vendored 版本则
+固定在 `vendor/daede/REVISION`，只有经过验证后才更新。这样可以避免上游
+包变化直接破坏当前 NN6000 v2 的 BTF 和内核模块匹配关系。

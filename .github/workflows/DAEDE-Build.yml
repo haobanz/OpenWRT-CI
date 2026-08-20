@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: MIT
+
+name: DAEDE Self Build
+
+on:
+  # Check the ImmortalWrt source every six hours.
+  schedule:
+    - cron: '17 */6 * * *'
+  # Manual runs always force a build.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daede-nn6000-build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check ImmortalWrt upstream
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      upstream_sha: ${{ steps.compare.outputs.upstream_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compare upstream revision
+        id: compare
+        env:
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -Eeuo pipefail
+          upstream_sha="$(git ls-remote https://github.com/VIKINGYFY/immortalwrt.git refs/heads/main | awk 'NR == 1 { print $1 }')"
+          known_sha=""
+          if [[ -f .github/daede-state/immortalwrt-main.sha ]]; then
+            known_sha="$(tr -d '[:space:]' < .github/daede-state/immortalwrt-main.sha)"
+          fi
+
+          changed=false
+          if [[ "$FORCE_BUILD" == true || "$upstream_sha" != "$known_sha" ]]; then
+            changed=true
+          fi
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "### DAED upstream check"
+            echo "- ImmortalWrt: `$upstream_sha`"
+            echo "- Last successful build: `${known_sha:-none}`"
+            echo "- Build required: `$changed`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build NN6000 v2 DAED firmware
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout DAEDE project
+        uses: actions/checkout@v4
+
+      - name: Checkout ImmortalWrt source
+        uses: actions/checkout@v4
+        with:
+          repository: VIKINGYFY/immortalwrt
+          ref: main
+          path: immortalwrt-local
+          fetch-depth: 1
+
+      - name: Initialize build environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get install -y dos2unix libfuse-dev
+          sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E timedatectl set-timezone Asia/Shanghai
+
+      - name: Record build revision
+        run: |
+          echo "UPSTREAM_SHA=$(git -C immortalwrt-local rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_ENV"
+
+      - name: Build DAED firmware and packages
+        env:
+          SOURCE_DIR: ${{ github.workspace }}/immortalwrt-local
+          JOBS: 8
+          SKIP_FEEDS: 0
+        run: bash Scripts/Build-NN6000-DAEDE.sh
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target_dir="immortalwrt-local/bin/targets/qualcommax/ipq60xx"
+          upload_dir="upload"
+          mkdir -p "$upload_dir"
+
+          sysupgrade="$(find "$target_dir" -maxdepth 1 -type f -name '*link_nn6000-v2*squashfs-sysupgrade.bin' -print -quit)"
+          factory="$(find "$target_dir" -maxdepth 1 -type f -name '*link_nn6000-v2*squashfs-factory.bin' -print -quit)"
+          [[ -n "$sysupgrade" && -n "$factory" ]]
+          cp -f "$sysupgrade" "$factory" "$upload_dir/"
+
+          find immortalwrt-local/bin -type f \( \
+            -name 'dae-*.apk' -o \
+            -name 'daed-*.apk' -o \
+            -name 'luci-app-daede-*.apk' -o \
+            -name 'vmlinux-btf-*.apk' -o \
+            -name 'kmod-sched-bpf-*.apk' -o \
+            -name 'kmod-xdp-sockets-diag-*.apk' \
+          \) -exec cp -f {} "$upload_dir/" \;
+
+          find "$target_dir" -maxdepth 1 -type f \( -name '*.manifest' -o -name 'sha256sums' \) \
+            -exec cp -f {} "$upload_dir/" \;
+          cp -f build/NN6000-DAEDE.config "$upload_dir/NN6000-DAEDE.config"
+
+          find "$upload_dir" -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > "$upload_dir/SHA256SUMS"
+          ls -lh "$upload_dir"
+
+      - name: Publish DAED Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: DAEDE-NN6000-v2-${{ env.BUILD_DATE }}-${{ env.UPSTREAM_SHA }}
+          name: DAEDE NN6000 v2 ${{ env.BUILD_DATE }}
+          target_commitish: ${{ github.sha }}
+          files: upload/*
+          fail_on_unmatched_files: true
+          body: |
+            自维护 DAEDE NN6000 v2 固件。
+
+            目标：Link NN6000 v2 / qualcommax-ipq60xx
+            ImmortalWrt 提交：${{ env.UPSTREAM_SHA }}
+            daed/dae 版本：见仓库中的 vendor/daede/REVISION
+
+            内容：OpenClash、dae、daed、luci-app-daede、匹配内核的
+            vmlinux-btf，以及 kmod-sched-bpf 和 kmod-xdp-sockets-diag。
+
+            普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
+            刷写或恢复。APK 包只适用于同一目标和同一内核版本。
+
+  finalize:
+    name: Record successful build
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    if: >-
+      always() &&
+      needs.check.outputs.changed == 'true' &&
+      needs.build.result == 'success'
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Update build baseline
+        env:
+          UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .github/daede-state
+          printf '%s\n' "$UPSTREAM_SHA" > .github/daede-state/immortalwrt-main.sha
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/daede-state/immortalwrt-main.sha
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: record successful DAED build"
+          git push origin HEAD:main
