@@ -34,6 +34,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           upstream_sha="$(git ls-remote https://github.com/VIKINGYFY/immortalwrt.git refs/heads/main | awk 'NR == 1 { print $1 }')"
+          [[ -n "$upstream_sha" ]]
           known_sha=""
           if [[ -f .github/daede-state/immortalwrt-main.sha ]]; then
             known_sha="$(tr -d '[:space:]' < .github/daede-state/immortalwrt-main.sha)"
@@ -78,7 +79,7 @@ jobs:
           sudo -E apt-get update
           sudo -E apt-get install -y dos2unix libfuse-dev
           sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          sudo -E timedatectl set-timezone Asia/Shanghai
+          sudo -E timedatectl set-timezone Asia/Shanghai || true
 
       - name: Record build revision
         run: |
@@ -114,9 +115,18 @@ jobs:
             -name 'kmod-xdp-sockets-diag-*.apk' \
           \) -exec cp -f {} "$upload_dir/" \;
 
+          for pattern in 'dae-*.apk' 'daed-*.apk' 'luci-app-daede-*.apk' \
+            'vmlinux-btf-*.apk' 'kmod-sched-bpf-*.apk' 'kmod-xdp-sockets-diag-*.apk'; do
+            if ! compgen -G "$upload_dir/$pattern" > /dev/null; then
+              echo "Missing DAED release package: $pattern" >&2
+              exit 1
+            fi
+          done
+
           find "$target_dir" -maxdepth 1 -type f \( -name '*.manifest' -o -name 'sha256sums' \) \
             -exec cp -f {} "$upload_dir/" \;
           cp -f build/NN6000-DAEDE.config "$upload_dir/NN6000-DAEDE.config"
+          cp -f vendor/daede/REVISION "$upload_dir/DAEDE-REVISION"
 
           find "$upload_dir" -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
             | sort -z | xargs -0 sha256sum > "$upload_dir/SHA256SUMS"
