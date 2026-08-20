@@ -1,0 +1,11 @@
+picoclaw v0.3.1
+  asset: picoclaw_Linux_arm64.tar.gz
+  sha256: e78ab0de05d000698ff8b32458e71cb3134e52e9eaf540e3323a72e9914de060
+
+nullclaw v2026.5.29
+  asset: nullclaw-linux-aarch64.bin
+  sha256: 87d4a19c39dd199f6d5f45b3c80e566d4349d0a291e6cc4ac8f573e2fecfa152
+
+zeroclaw v0.8.4
+  asset: zeroclaw-aarch64-unknown-linux-musl.tar.gz
+  sha256: bcdc4d7c0bc4fd834c7727e7f6ef7809e49945ed55b5bb6f90d7640ca718d4af

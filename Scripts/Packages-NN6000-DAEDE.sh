@@ -4,6 +4,7 @@ set -Eeuo pipefail
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must point to the local OpenWRT-CI checkout}"
 
 DAEDE_DIR="$GITHUB_WORKSPACE/vendor/daede"
+AGENT_HUB_DIR="$GITHUB_WORKSPACE/vendor/agent-hub"
 
 # Remove same-name feed entries so the vendored versions are unambiguous.
 for feed_package in \
@@ -25,6 +26,15 @@ for package_name in dae daed luci-app-daede vmlinux-btf; do
 	fi
 	rm -rf "./$package_name"
 	cp -a "$DAEDE_DIR/$package_name" "./$package_name"
+done
+
+for package_name in picoclaw nullclaw zeroclaw agent-hub luci-app-agent-hub; do
+	if [[ ! -d "$AGENT_HUB_DIR/$package_name" ]]; then
+		echo "Missing vendored package: $AGENT_HUB_DIR/$package_name" >&2
+		exit 1
+	fi
+	rm -rf "./$package_name"
+	cp -a "$AGENT_HUB_DIR/$package_name" "./$package_name"
 done
 
 # OpenClash is kept on the same dev branch used by the upstream CI project.

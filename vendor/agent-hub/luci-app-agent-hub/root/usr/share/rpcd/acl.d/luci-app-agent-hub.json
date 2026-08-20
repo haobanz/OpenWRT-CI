@@ -1,0 +1,17 @@
+{
+	"luci-app-agent-hub": {
+		"description": "Grant access to Agent Hub configuration",
+		"read": {
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"uci": [ "agent-hub" ]
+		},
+		"write": {
+			"file": {
+				"/etc/init.d/agent-hub *": [ "exec" ]
+			},
+			"uci": [ "agent-hub" ]
+		}
+	}
+}

@@ -1,7 +1,7 @@
-# DAEDE 自用固件
+# DAEDE + Agent Hub 自用固件
 
-这是一个独立维护的 ImmortalWrt DAED/dae 固件项目，不再跟随原
-OpenWRT-CI 的通用平台编译逻辑。
+这是一个独立维护的 ImmortalWrt 自用固件项目，重点维护 DAED/dae、OpenClash
+和轻量 AI Agent，不再跟随原 OpenWRT-CI 的通用平台编译逻辑。
 
 ## 当前目标
 
@@ -10,27 +10,54 @@ OpenWRT-CI 的通用平台编译逻辑。
 - Target: `qualcommax/ipq60xx`
 - Device: `link_nn6000-v2`
 - OpenClash、dae、daed、luci-app-daede
+- PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
 
-Release 同时提供设备固件和与当前内核匹配的 DAED/dae APK 包。其他设备
-只有在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会
-直接套用原仓库的通用配置。
+Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK，以及 Agent Hub
+的五个 APK。其他设备只有在确认具备 BPF、XDP、内核 BTF 支持并加入独立
+配置后才会增加，不会直接套用原仓库的通用配置。
+
+## Agent Hub
+
+固件同时安装三个适用于 ARM64 的静态 Agent 运行时：
+
+- PicoClaw `0.3.1`
+- NullClaw `2026.5.29`
+- ZeroClaw `0.8.4`
+
+LuCI 的 `服务 -> Agent Hub` 提供一套通用设置：运行时、模型提供商、API
+地址、API Key、模型名、温度、最大输出 Token、监听范围和端口。保存应用后，
+配置适配器会生成所选运行时的原生 JSON/TOML，只由 `procd` 启动一个实例。
+
+服务默认关闭并只监听路由器本机。运行进程使用独立的 `agenthub` 非 root
+账号；PicoClaw 和 NullClaw 使用工作区限制，ZeroClaw 使用自己的风险配置。
+通用配置文件位于 `/etc/agent-hub/managed`。关闭“使用通用设置”后，可以在
+`/etc/agent-hub/native/<运行时>` 维护完整的原生配置。
+
+SSH 下也可以切换和检查：
+
+```sh
+agent-hubctl versions
+agent-hubctl select nullclaw
+agent-hubctl restart
+agent-hubctl status
+```
 
 ## 自动构建
 
 [`DAEDE-Build.yml`](.github/workflows/DAEDE-Build.yml) 每 6 小时检查
 `VIKINGYFY/immortalwrt` 的 `main` 分支。检测到上游提交变化后，调用本仓库
-自己的 `Build-NN6000-DAEDE.sh`，构建 NN6000 v2 固件和 DAED 依赖包，并创建
-一个新的 GitHub Release。
+自己的 `Build-NN6000-DAEDE.sh`，构建 NN6000 v2 固件、DAED 依赖包和 Agent
+Hub 的五个 APK，并创建一个新的 GitHub Release。
 
 构建失败不会更新提交基线，下一轮会自动重试。也可以在 Actions 中手动
 运行该 workflow，手动运行会强制构建一次。
 
 ## 最新 Release
 
-[NN6000-v2-20260820](https://github.com/haobanz/OpenWRT-CI/releases/tag/NN6000-v2-20260820)
+[查看最新构建](https://github.com/haobanz/OpenWRT-CI/releases/latest)
 
 普通升级使用 `squashfs-sysupgrade.bin`；`factory.bin` 只用于初始刷写或
 恢复流程。刷机前请备份路由器配置，并确认设备型号为 Link NN6000 v2。

@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=10
+
+CONFIG='agent-hub'
+PROG_GENERATE='/usr/libexec/agent-hub-generate'
+
+prepare_home() {
+	local home="$1"
+	mkdir -p "$home"
+	chown agenthub:agenthub "$home"
+	chmod 0700 "$home"
+}
+
+start_service() {
+	local enabled engine managed listen_scope port respawn host home config_file
+	config_load "$CONFIG"
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+	config_get engine main engine 'picoclaw'
+	config_get_bool managed main managed_config 1
+	config_get listen_scope main listen_scope 'loopback'
+	config_get port main port '18790'
+	config_get_bool respawn main respawn 1
+
+	case "$engine" in
+		picoclaw|nullclaw|zeroclaw) ;;
+		*) logger -t agent-hub "unsupported engine: $engine"; return 1 ;;
+	esac
+	case "$listen_scope" in
+		loopback) host='127.0.0.1' ;;
+		lan) host='0.0.0.0' ;;
+		*) logger -t agent-hub "unsupported listen scope: $listen_scope"; return 1 ;;
+	esac
+
+	if [ "$managed" -eq 1 ]; then
+		home="/etc/agent-hub/managed/$engine"
+		"$PROG_GENERATE" "$engine" || return 1
+	else
+		home="/etc/agent-hub/native/$engine"
+		prepare_home "$home"
+		case "$engine" in
+			picoclaw|nullclaw) config_file="$home/config.json" ;;
+			zeroclaw) config_file="$home/config.toml" ;;
+		esac
+		if [ ! -s "$config_file" ]; then
+			logger -t agent-hub "native config is missing: $config_file"
+			return 1
+		fi
+		chown agenthub:agenthub "$config_file"
+		chmod 0600 "$config_file"
+	fi
+
+	procd_open_instance "$engine"
+	case "$engine" in
+		picoclaw)
+			procd_set_param command /usr/bin/picoclaw --no-color gateway --allow-empty --host "$host"
+			procd_set_param env \
+				"HOME=$home" \
+				"PICOCLAW_HOME=$home" \
+				"PICOCLAW_CONFIG=$home/config.json" \
+				"PICOCLAW_GATEWAY_HOST=$host" \
+				"PICOCLAW_GATEWAY_PORT=$port"
+			;;
+		nullclaw)
+			procd_set_param command /usr/bin/nullclaw gateway \
+				--host "$host" --port "$port" --workspace "$home/workspace"
+			procd_set_param env "HOME=$home" "NULLCLAW_HOME=$home"
+			;;
+		zeroclaw)
+			procd_set_param command /usr/bin/zeroclaw --config-dir "$home" daemon \
+				--host "$host" --port "$port"
+			procd_set_param env "HOME=$home" "ZEROCLAW_CONFIG_DIR=$home"
+			;;
+	esac
+	procd_set_param user agenthub
+	procd_set_param group agenthub
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	[ "$respawn" -eq 1 ] && procd_set_param respawn 3600 5 5
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$CONFIG"
+}

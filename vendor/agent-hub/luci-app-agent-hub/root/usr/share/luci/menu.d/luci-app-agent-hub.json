@@ -1,0 +1,13 @@
+{
+	"admin/services/agent-hub": {
+		"title": "Agent Hub",
+		"order": 35,
+		"action": {
+			"type": "view",
+			"path": "agent-hub/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-agent-hub" ]
+		}
+	}
+}

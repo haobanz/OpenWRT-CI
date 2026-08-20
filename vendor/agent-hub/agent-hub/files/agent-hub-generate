@@ -1,0 +1,228 @@
+#!/bin/sh
+set -e
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+CONFIG="${AGENT_HUB_CONFIG:-agent-hub}"
+SECTION='main'
+ROOT="${AGENT_HUB_ROOT:-/etc/agent-hub/managed}"
+RUN_USER="${AGENT_HUB_USER:-agenthub}"
+RUN_GROUP="${AGENT_HUB_GROUP:-agenthub}"
+
+die() {
+	logger -t agent-hub -- "$1"
+	printf 'agent-hub: %s\n' "$1" >&2
+	exit 1
+}
+
+prepare_home() {
+	local home="$1"
+	mkdir -p "$home"
+	chown "$RUN_USER:$RUN_GROUP" "$home"
+	chmod 0700 "$home"
+}
+
+write_json() {
+	local target="$1"
+	local temp
+	temp="$(mktemp "${target}.XXXXXX")" || die 'cannot create temporary config'
+	json_dump > "$temp"
+	chown "$RUN_USER:$RUN_GROUP" "$temp"
+	chmod 0600 "$temp"
+	mv -f "$temp" "$target"
+}
+
+toml_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+validate_single_line() {
+	if printf '%s' "$2" | grep -q '[[:cntrl:]]'; then
+		die "$1 contains a control character"
+	fi
+}
+
+provider_names() {
+	case "$provider" in
+		openai_compatible)
+			pico_provider='openai'
+			null_provider='openai'
+			zero_provider='custom'
+			;;
+		openai|openrouter|gemini|deepseek|groq|ollama)
+			pico_provider="$provider"
+			null_provider="$provider"
+			zero_provider="$provider"
+			;;
+		anthropic)
+			pico_provider='anthropic'
+			null_provider='anthropic'
+			zero_provider='anthropic'
+			;;
+		*) die "unsupported provider: $provider" ;;
+	esac
+}
+
+load_common() {
+	config_load "$CONFIG"
+	config_get provider "$SECTION" provider 'openai_compatible'
+	config_get api_base "$SECTION" api_base ''
+	config_get api_key "$SECTION" api_key ''
+	config_get model "$SECTION" model ''
+	config_get temperature "$SECTION" temperature ''
+	config_get max_tokens "$SECTION" max_tokens ''
+	config_get listen_scope "$SECTION" listen_scope 'loopback'
+	config_get port "$SECTION" port '18790'
+
+	[ -n "$model" ] || die 'model is required'
+	case "$listen_scope" in
+		loopback) host='127.0.0.1'; allow_public='0' ;;
+		lan) host='0.0.0.0'; allow_public='1' ;;
+		*) die "unsupported listen scope: $listen_scope" ;;
+	esac
+	case "$port" in ''|*[!0-9]*) die 'port must be an integer' ;; esac
+	[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
+	if [ -n "$max_tokens" ]; then
+		case "$max_tokens" in ''|*[!0-9]*) die 'max_tokens must be an integer' ;; esac
+		[ "$max_tokens" -ge 1 ] || die 'max_tokens must be greater than zero'
+	fi
+	if [ -n "$temperature" ]; then
+		awk -v value="$temperature" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value >= 0 && value <= 2) }' \
+			|| die 'temperature must be between 0 and 2'
+	fi
+	validate_single_line 'model' "$model"
+	validate_single_line 'API base URL' "$api_base"
+	validate_single_line 'API key' "$api_key"
+	provider_names
+}
+
+generate_picoclaw() {
+	local home="$ROOT/picoclaw"
+	prepare_home "$home"
+	json_init
+	json_add_int version 3
+	json_add_object agents
+	json_add_object defaults
+	json_add_string workspace "$home/workspace"
+	json_add_boolean restrict_to_workspace 1
+	json_add_string model_name main
+	[ -z "$temperature" ] || json_add_double temperature "$temperature"
+	[ -z "$max_tokens" ] || json_add_int max_tokens "$max_tokens"
+	json_close_object
+	json_close_object
+	json_add_array model_list
+	json_add_object ''
+	json_add_string model_name main
+	json_add_string provider "$pico_provider"
+	json_add_string model "$model"
+	[ -z "$api_base" ] || json_add_string api_base "$api_base"
+	if [ -n "$api_key" ]; then
+		json_add_array api_keys
+		json_add_string '' "$api_key"
+		json_close_array
+	fi
+	json_add_boolean enabled 1
+	json_close_object
+	json_close_array
+	json_add_object gateway
+	json_add_string host "$host"
+	json_add_int port "$port"
+	json_add_string log_level warn
+	json_close_object
+	write_json "$home/config.json"
+}
+
+generate_nullclaw() {
+	local home="$ROOT/nullclaw"
+	prepare_home "$home"
+	json_init
+	[ -z "$temperature" ] || json_add_double default_temperature "$temperature"
+	[ -z "$max_tokens" ] || json_add_int max_tokens "$max_tokens"
+	json_add_object models
+	json_add_object providers
+	json_add_object "$null_provider"
+	[ -z "$api_key" ] || json_add_string api_key "$api_key"
+	[ -z "$api_base" ] || json_add_string base_url "$api_base"
+	[ "$provider" != 'openai_compatible' ] || json_add_string api_mode chat_completions
+	json_close_object
+	json_close_object
+	json_close_object
+	json_add_object agents
+	json_add_object defaults
+	json_add_object model
+	json_add_string primary "$null_provider/$model"
+	json_close_object
+	json_close_object
+	json_close_object
+	json_add_object channels
+	json_add_boolean cli 1
+	json_close_object
+	json_add_object memory
+	json_add_string backend sqlite
+	json_add_boolean auto_save 1
+	json_close_object
+	json_add_object gateway
+	json_add_string host "$host"
+	json_add_int port "$port"
+	json_add_boolean require_pairing 1
+	json_add_boolean allow_public_bind "$allow_public"
+	json_close_object
+	json_add_object autonomy
+	json_add_string level supervised
+	json_add_boolean workspace_only 1
+	json_close_object
+	write_json "$home/config.json"
+}
+
+generate_zeroclaw() {
+	local home="$ROOT/zeroclaw"
+	local target temp escaped_model escaped_base escaped_key
+	prepare_home "$home"
+	target="$home/config.toml"
+	temp="$(mktemp "${target}.XXXXXX")" || die 'cannot create temporary config'
+	escaped_model="$(toml_escape "$model")"
+	escaped_base="$(toml_escape "$api_base")"
+	escaped_key="$(toml_escape "$api_key")"
+	{
+		printf 'schema_version = 3\n\n'
+		printf '[providers.models.%s.main]\n' "$zero_provider"
+		printf 'model = "%s"\n' "$escaped_model"
+		[ -z "$escaped_key" ] || printf 'api_key = "%s"\n' "$escaped_key"
+		[ -z "$escaped_base" ] || printf 'uri = "%s"\n' "$escaped_base"
+		[ -z "$temperature" ] || printf 'temperature = %s\n' "$temperature"
+		[ -z "$max_tokens" ] || printf 'max_tokens = %s\n' "$max_tokens"
+		if [ "$provider" = 'openai_compatible' ]; then
+			printf 'kind = "openai-compatible"\n'
+			printf 'wire_api = "chat_completions"\n'
+		fi
+		printf '\n[agents.main]\n'
+		printf 'model_provider = "%s.main"\n' "$zero_provider"
+		printf 'risk_profile = "router"\n'
+		printf 'runtime_profile = "router"\n'
+		printf '\n[risk_profiles.router]\n'
+		printf '\n[runtime_profiles.router]\n'
+		printf '\n[gateway]\n'
+		printf 'host = "%s"\n' "$host"
+		printf 'port = %s\n' "$port"
+		printf 'require_pairing = true\n'
+		if [ "$allow_public" = '1' ]; then
+			printf 'allow_public_bind = true\n'
+		else
+			printf 'allow_public_bind = false\n'
+		fi
+	} > "$temp"
+	chown "$RUN_USER:$RUN_GROUP" "$temp"
+	chmod 0600 "$temp"
+	mv -f "$temp" "$target"
+}
+
+[ "$#" -eq 1 ] || die 'usage: agent-hub-generate <picoclaw|nullclaw|zeroclaw>'
+load_common
+umask 077
+case "$1" in
+	picoclaw) generate_picoclaw ;;
+	nullclaw) generate_nullclaw ;;
+	zeroclaw) generate_zeroclaw ;;
+	*) die "unsupported engine: $1" ;;
+esac

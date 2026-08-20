@@ -1,0 +1,70 @@
+#!/bin/sh
+set -eu
+
+usage() {
+	cat <<'EOF'
+Usage: agent-hubctl <command> [argument]
+
+Commands:
+  select <picoclaw|nullclaw|zeroclaw>
+  enable | disable | start | stop | restart | status
+  generate [picoclaw|nullclaw|zeroclaw]
+  versions
+  native-path [picoclaw|nullclaw|zeroclaw]
+EOF
+}
+
+selected_engine() {
+	uci -q get agent-hub.main.engine || printf '%s\n' picoclaw
+}
+
+valid_engine() {
+	case "$1" in picoclaw|nullclaw|zeroclaw) return 0 ;; esac
+	return 1
+}
+
+command="${1:-}"
+case "$command" in
+	select)
+		engine="${2:-}"
+		valid_engine "$engine" || { usage >&2; exit 2; }
+		uci set "agent-hub.main.engine=$engine"
+		uci commit agent-hub
+		if [ "$(uci -q get agent-hub.main.enabled || printf 0)" = '1' ]; then
+			/etc/init.d/agent-hub restart
+		fi
+		;;
+	enable)
+		uci set agent-hub.main.enabled='1'
+		uci commit agent-hub
+		/etc/init.d/agent-hub enable
+		/etc/init.d/agent-hub restart
+		;;
+	disable)
+		uci set agent-hub.main.enabled='0'
+		uci commit agent-hub
+		/etc/init.d/agent-hub stop
+		;;
+	start|stop|restart|status)
+		/etc/init.d/agent-hub "$command"
+		;;
+	generate)
+		engine="${2:-$(selected_engine)}"
+		valid_engine "$engine" || { usage >&2; exit 2; }
+		/usr/libexec/agent-hub-generate "$engine"
+		;;
+	versions)
+		/usr/bin/picoclaw version 2>/dev/null | sed -n 's/^Version: /PicoClaw /p'
+		/usr/bin/nullclaw --version 2>/dev/null | sed 's/^nullclaw /NullClaw /'
+		/usr/bin/zeroclaw --version 2>/dev/null | sed 's/^zeroclaw /ZeroClaw /'
+		;;
+	native-path)
+		engine="${2:-$(selected_engine)}"
+		valid_engine "$engine" || { usage >&2; exit 2; }
+		case "$engine" in
+			picoclaw|nullclaw) printf '/etc/agent-hub/native/%s/config.json\n' "$engine" ;;
+			zeroclaw) printf '/etc/agent-hub/native/%s/config.toml\n' "$engine" ;;
+		esac
+		;;
+	*) usage >&2; exit 2 ;;
+esac

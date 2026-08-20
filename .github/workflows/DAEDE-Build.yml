@@ -48,14 +48,14 @@ jobs:
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
           {
-            echo "### DAED upstream check"
+            echo "### ImmortalWrt upstream check"
             echo "- ImmortalWrt: `$upstream_sha`"
             echo "- Last successful build: `${known_sha:-none}`"
             echo "- Build required: `$changed`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build NN6000 v2 DAED firmware
+    name: Build NN6000 v2 firmware and Agent Hub
     needs: check
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -83,7 +83,7 @@ jobs:
             immortalwrt-local/staging_dir/tool*
             immortalwrt-local/build_dir/host*
             immortalwrt-local/build_dir/tool*
-          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile') }}
+          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile', 'vendor/agent-hub/**') }}
           restore-keys: |
             daede-nn6000-${{ runner.os }}-
 
@@ -104,7 +104,7 @@ jobs:
           echo "UPSTREAM_SHA=$(git -C immortalwrt-local rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_ENV"
 
-      - name: Build DAED firmware and packages
+      - name: Build firmware and packages
         env:
           SOURCE_DIR: ${{ github.workspace }}/immortalwrt-local
           JOBS: 8
@@ -143,13 +143,20 @@ jobs:
             -name 'luci-app-daede-*.apk' -o \
             -name 'vmlinux-btf-*.apk' -o \
             -name 'kmod-sched-bpf-*.apk' -o \
-            -name 'kmod-xdp-sockets-diag-*.apk' \
+            -name 'kmod-xdp-sockets-diag-*.apk' -o \
+            -name 'picoclaw-*.apk' -o \
+            -name 'nullclaw-*.apk' -o \
+            -name 'zeroclaw-*.apk' -o \
+            -name 'agent-hub-*.apk' -o \
+            -name 'luci-app-agent-hub-*.apk' \
           \) -exec cp -f {} "$upload_dir/" \;
 
           for pattern in 'dae-*.apk' 'daed-*.apk' 'luci-app-daede-*.apk' \
-            'vmlinux-btf-*.apk' 'kmod-sched-bpf-*.apk' 'kmod-xdp-sockets-diag-*.apk'; do
+            'vmlinux-btf-*.apk' 'kmod-sched-bpf-*.apk' 'kmod-xdp-sockets-diag-*.apk' \
+            'picoclaw-*.apk' 'nullclaw-*.apk' 'zeroclaw-*.apk' 'agent-hub-*.apk' \
+            'luci-app-agent-hub-*.apk'; do
             if ! compgen -G "$upload_dir/$pattern" > /dev/null; then
-              echo "Missing DAED release package: $pattern" >&2
+              echo "Missing release package: $pattern" >&2
               exit 1
             fi
           done
@@ -158,6 +165,7 @@ jobs:
             -exec cp -f {} "$upload_dir/" \;
           cp -f build/NN6000-DAEDE.config "$upload_dir/NN6000-DAEDE.config"
           cp -f vendor/daede/REVISION "$upload_dir/DAEDE-REVISION"
+          cp -f vendor/agent-hub/REVISION "$upload_dir/AGENT-HUB-REVISION"
 
           (
             cd "$upload_dir"
@@ -176,7 +184,7 @@ jobs:
           fi
           ls -lh "$upload_dir"
 
-      - name: Publish DAED Release
+      - name: Publish DAEDE and Agent Hub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: DAEDE-NN6000-v2-${{ env.BUILD_DATE }}-${{ env.UPSTREAM_SHA }}
@@ -192,7 +200,8 @@ jobs:
             daed/dae 版本：见仓库中的 vendor/daede/REVISION
 
             内容：OpenClash、dae、daed、luci-app-daede、匹配内核的
-            vmlinux-btf，以及 kmod-sched-bpf 和 kmod-xdp-sockets-diag。
+            vmlinux-btf、BPF/XDP 内核模块，以及 Agent Hub 管理的 PicoClaw、
+            NullClaw、ZeroClaw。三个 Agent 运行时同时安装，但只启动所选的一个。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。
