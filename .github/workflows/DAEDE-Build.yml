@@ -154,13 +154,26 @@ jobs:
             fi
           done
 
-          find "$target_dir" -maxdepth 1 -type f \( -name '*.manifest' -o -name 'sha256sums' \) \
+          find "$target_dir" -maxdepth 1 -type f -name '*.manifest' \
             -exec cp -f {} "$upload_dir/" \;
           cp -f build/NN6000-DAEDE.config "$upload_dir/NN6000-DAEDE.config"
           cp -f vendor/daede/REVISION "$upload_dir/DAEDE-REVISION"
 
-          find "$upload_dir" -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
-            | sort -z | xargs -0 sha256sum > "$upload_dir/SHA256SUMS"
+          (
+            cd "$upload_dir"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+              | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+
+          duplicate_names="$(
+            find "$upload_dir" -maxdepth 1 -type f -printf '%f\n' \
+              | awk '{ name = tolower($0); if (++seen[name] == 2) print name }'
+          )"
+          if [[ -n "$duplicate_names" ]]; then
+            echo "Release asset names collide when compared case-insensitively:" >&2
+            echo "$duplicate_names" >&2
+            exit 1
+          fi
           ls -lh "$upload_dir"
 
       - name: Publish DAED Release
