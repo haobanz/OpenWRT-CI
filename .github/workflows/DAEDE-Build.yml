@@ -13,7 +13,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: daede-nn6000-build
+  # Include the ref so a stale run on one branch cannot block another build.
+  group: daede-nn6000-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
