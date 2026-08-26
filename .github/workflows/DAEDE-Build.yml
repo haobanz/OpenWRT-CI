@@ -134,7 +134,10 @@ jobs:
 
           sysupgrade="$(find "$target_dir" -maxdepth 1 -type f -name '*link_nn6000-v2*squashfs-sysupgrade.bin' -print -quit)"
           factory="$(find "$target_dir" -maxdepth 1 -type f -name '*link_nn6000-v2*squashfs-factory.bin' -print -quit)"
+          manifest="$(find "$target_dir" -maxdepth 1 -type f -name '*.manifest' -print -quit)"
           [[ -n "$sysupgrade" && -n "$factory" ]]
+          [[ -n "$manifest" ]]
+          grep -q '^luci-app-openclash ' "$manifest"
           cp -f "$sysupgrade" "$factory" "$upload_dir/"
 
           find immortalwrt-local/bin -type f \( \
@@ -144,6 +147,7 @@ jobs:
             -name 'vmlinux-btf-*.apk' -o \
             -name 'kmod-sched-bpf-*.apk' -o \
             -name 'kmod-xdp-sockets-diag-*.apk' -o \
+            -name 'luci-app-openclash-*.apk' -o \
             -name 'picoclaw-*.apk' -o \
             -name 'nullclaw-*.apk' -o \
             -name 'zeroclaw-*.apk' -o \
@@ -153,6 +157,7 @@ jobs:
 
           for pattern in 'dae-*.apk' 'daed-*.apk' 'luci-app-daede-*.apk' \
             'vmlinux-btf-*.apk' 'kmod-sched-bpf-*.apk' 'kmod-xdp-sockets-diag-*.apk' \
+            'luci-app-openclash-*.apk' \
             'picoclaw-*.apk' 'nullclaw-*.apk' 'zeroclaw-*.apk' 'agent-hub-*.apk' \
             'luci-app-agent-hub-*.apk'; do
             if ! compgen -G "$upload_dir/$pattern" > /dev/null; then

@@ -13,6 +13,14 @@ CONFIG_FEED_video=n
 
 # Proxy components
 CONFIG_PACKAGE_luci-app-openclash=y
+# Keep OpenClash's runtime dependencies explicit so a dropped selection is
+# caught during defconfig instead of silently omitting the LuCI application.
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_luci-compat=y
+CONFIG_PACKAGE_ruby=y
+CONFIG_PACKAGE_ruby-yaml=y
+CONFIG_PACKAGE_unzip=y
+CONFIG_PACKAGE_kmod-inet-diag=y
 CONFIG_PACKAGE_dae=y
 CONFIG_PACKAGE_daed=y
 CONFIG_PACKAGE_luci-app-daede=y

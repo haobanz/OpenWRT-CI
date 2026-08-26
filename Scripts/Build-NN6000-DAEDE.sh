@@ -146,6 +146,11 @@ rm -f .config
 (cd package && bash "$CI_ROOT/Scripts/Packages-NN6000-DAEDE.sh")
 apply_local_patches
 
+# The DAEDE packages are copied into the tree after feed installation. Force
+# OpenWrt to rescan package metadata so injected packages are visible to
+# Kconfig during the first defconfig pass.
+make_openwrt prepare-tmpinfo
+
 cat "$CI_ROOT/Config/NN6000-DAEDE.txt" \
 	"$CI_ROOT/Config/GENERAL-NN6000-DAEDE.txt" > .config
 bash "$CI_ROOT/Scripts/Settings.sh"
@@ -156,6 +161,23 @@ make_openwrt defconfig -j"$JOBS"
 if ! grep -q '^CONFIG_USE_LLVM_BUILD=y$' .config; then
 	printf '%s\n' 'CONFIG_USE_LLVM_BUILD=y' >> .config
 fi
+
+for required_package in \
+	luci-app-openclash \
+	dae \
+	daed \
+	luci-app-daede \
+	luci-app-agent-hub \
+	agent-hub \
+	picoclaw \
+	nullclaw \
+	zeroclaw; do
+	if ! grep -Fqx "CONFIG_PACKAGE_${required_package}=y" .config; then
+		echo "Required package was dropped from .config: ${required_package}" >&2
+		exit 1
+	fi
+done
+
 mkdir -p "$CI_ROOT/build"
 cp -f .config "$CI_ROOT/build/NN6000-DAEDE.config"
 
