@@ -6,6 +6,15 @@ STOP=10
 
 CONFIG='agent-hub'
 PROG_GENERATE='/usr/libexec/agent-hub-generate'
+STATE_ROOT='/etc/agent-hub'
+MANAGED_ROOT="$STATE_ROOT/managed"
+NATIVE_ROOT="$STATE_ROOT/native"
+
+prepare_roots() {
+	mkdir -p "$MANAGED_ROOT" "$NATIVE_ROOT" || return 1
+	chown root:agenthub "$STATE_ROOT" "$MANAGED_ROOT" "$NATIVE_ROOT" || return 1
+	chmod 0710 "$STATE_ROOT" "$MANAGED_ROOT" "$NATIVE_ROOT"
+}
 
 prepare_home() {
 	local home="$1"
@@ -34,12 +43,16 @@ start_service() {
 		lan) host='0.0.0.0' ;;
 		*) logger -t agent-hub "unsupported listen scope: $listen_scope"; return 1 ;;
 	esac
+	prepare_roots || {
+		logger -t agent-hub 'failed to prepare runtime directories'
+		return 1
+	}
 
 	if [ "$managed" -eq 1 ]; then
-		home="/etc/agent-hub/managed/$engine"
+		home="$MANAGED_ROOT/$engine"
 		"$PROG_GENERATE" "$engine" || return 1
 	else
-		home="/etc/agent-hub/native/$engine"
+		home="$NATIVE_ROOT/$engine"
 		prepare_home "$home"
 		case "$engine" in
 			picoclaw|nullclaw) config_file="$home/config.json" ;;

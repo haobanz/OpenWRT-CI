@@ -16,6 +16,14 @@ die() {
 	exit 1
 }
 
+prepare_root() {
+	local parent="${ROOT%/*}"
+	[ -n "$parent" ] || die 'managed root must have a parent directory'
+	mkdir -p "$parent" "$ROOT"
+	chown "root:$RUN_GROUP" "$parent" "$ROOT"
+	chmod 0710 "$parent" "$ROOT"
+}
+
 prepare_home() {
 	local home="$1"
 	mkdir -p "$home"
@@ -136,6 +144,7 @@ generate_picoclaw() {
 generate_nullclaw() {
 	local home="$ROOT/nullclaw"
 	prepare_home "$home"
+	prepare_home "$home/workspace"
 	json_init
 	[ -z "$temperature" ] || json_add_double default_temperature "$temperature"
 	[ -z "$max_tokens" ] || json_add_int max_tokens "$max_tokens"
@@ -220,6 +229,7 @@ generate_zeroclaw() {
 [ "$#" -eq 1 ] || die 'usage: agent-hub-generate <picoclaw|nullclaw|zeroclaw>'
 load_common
 umask 077
+prepare_root
 case "$1" in
 	picoclaw) generate_picoclaw ;;
 	nullclaw) generate_nullclaw ;;

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=agent-hub
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -47,8 +47,8 @@ define Package/agent-hub/postinst
 if [ -z "$${IPKG_INSTROOT}" ]; then
 	chmod 0600 /etc/config/agent-hub 2>/dev/null || true
 	mkdir -p /etc/agent-hub/managed /etc/agent-hub/native
-	chown agenthub:agenthub /etc/agent-hub/managed /etc/agent-hub/native 2>/dev/null || true
-	chmod 0700 /etc/agent-hub/managed /etc/agent-hub/native 2>/dev/null || true
+	chown root:agenthub /etc/agent-hub /etc/agent-hub/managed /etc/agent-hub/native 2>/dev/null || true
+	chmod 0710 /etc/agent-hub /etc/agent-hub/managed /etc/agent-hub/native 2>/dev/null || true
 	/etc/init.d/agent-hub enable >/dev/null 2>&1 || true
 fi
 exit 0
