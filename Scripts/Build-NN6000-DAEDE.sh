@@ -139,19 +139,33 @@ apply_local_patches() {
 
 if [[ "${SKIP_FEEDS:-0}" != 1 ]]; then
 	./scripts/feeds update -a
-	./scripts/feeds install -a
 fi
 
 rm -f .config
 (cd package && bash "$CI_ROOT/Scripts/Packages-NN6000-DAEDE.sh")
 apply_local_patches
 
+# Install feed links only after the vendored packages are present. The feeds
+# helper performs an initial package scan, so this lets it recognize the
+# self-maintained packages before it resolves same-name feed entries.
+if [[ "${SKIP_FEEDS:-0}" != 1 ]]; then
+	./scripts/feeds install -a
+fi
+
 # Remove any broken feed links/source paths recreated by feed installation.
-# Keep the vendored package as the only OpenClash definition in the tree.
+# Keep the vendored packages as the only definitions for these names.
 rm -rf \
+	feeds/luci/applications/luci-app-dae \
+	feeds/luci/applications/luci-app-daed \
 	feeds/luci/applications/luci-app-openclash \
+	feeds/packages/net/dae \
+	feeds/packages/net/daed \
 	feeds/packages/luci-app-openclash \
+	package/feeds/luci/luci-app-dae \
+	package/feeds/luci/luci-app-daed \
 	package/feeds/luci/luci-app-openclash \
+	package/feeds/packages/dae \
+	package/feeds/packages/daed \
 	package/feeds/packages/luci-app-openclash
 rm -f feeds/luci.tmp/info/.packageinfo-applications_luci-app-openclash
 
@@ -173,11 +187,14 @@ rm -rf tmp/info
 # Kconfig during the first defconfig pass.
 make_openwrt prepare-tmpinfo
 
-if ! grep -q '^Source-Makefile: package/luci-app-openclash/Makefile$' tmp/.packageinfo; then
+if ! grep -Eq '^Source-Makefile: package/luci-app-openclash/Makefile[[:space:]]*$' tmp/.packageinfo; then
+	echo 'OpenClash package scan entries:' >&2
+	find -L package feeds -maxdepth 5 -type f -path '*openclash*/Makefile' -print >&2 || true
+	grep -n -E 'Source-Makefile: .*openclash|Package: luci-app-openclash' tmp/.packageinfo tmp/info/.packageinfo-* 2>/dev/null >&2 || true
 	echo 'The self-maintained OpenClash package was not found in package metadata' >&2
 	exit 1
 fi
-if grep -q '^Source-Makefile: feeds/.*/luci-app-openclash/Makefile$' tmp/.packageinfo; then
+if grep -Eq '^Source-Makefile: feeds/.*/luci-app-openclash/Makefile[[:space:]]*$' tmp/.packageinfo; then
 	echo 'A feed OpenClash package remains in package metadata' >&2
 	exit 1
 fi
