@@ -139,21 +139,12 @@ apply_local_patches() {
 
 if [[ "${SKIP_FEEDS:-0}" != 1 ]]; then
 	./scripts/feeds update -a
-fi
-
-rm -f .config
-(cd package && bash "$CI_ROOT/Scripts/Packages-NN6000-DAEDE.sh")
-apply_local_patches
-
-# Install feed links only after the vendored packages are present. The feeds
-# helper performs an initial package scan, so this lets it recognize the
-# self-maintained packages before it resolves same-name feed entries.
-if [[ "${SKIP_FEEDS:-0}" != 1 ]]; then
 	./scripts/feeds install -a
 fi
 
-# Remove any broken feed links/source paths recreated by feed installation.
-# Keep the vendored packages as the only definitions for these names.
+# Remove feed links/source paths before injecting the vendored packages. No
+# feed operation runs after this point, so it cannot recreate or remove a
+# same-name link over the self-maintained package.
 rm -rf \
 	feeds/luci/applications/luci-app-dae \
 	feeds/luci/applications/luci-app-daed \
@@ -182,9 +173,18 @@ rm -f \
 	tmp/.packageusergroup
 rm -rf tmp/info
 
-# The DAEDE packages are copied into the tree after feed installation. Force
-# OpenWrt to rescan package metadata so injected packages are visible to
-# Kconfig during the first defconfig pass.
+# Inject the self-maintained packages after all feed operations and generated
+# metadata cleanup. Force OpenWrt to rescan package metadata so they are
+# visible to Kconfig during the first defconfig pass.
+rm -f .config
+(cd package && bash "$CI_ROOT/Scripts/Packages-NN6000-DAEDE.sh")
+apply_local_patches
+
+if [[ ! -f package/luci-app-openclash/Makefile ]]; then
+	echo 'The self-maintained OpenClash package directory was not created' >&2
+	exit 1
+fi
+
 make_openwrt prepare-tmpinfo
 
 if ! grep -Eq '^Source-Makefile: package/luci-app-openclash/Makefile[[:space:]]*$' tmp/.packageinfo; then
