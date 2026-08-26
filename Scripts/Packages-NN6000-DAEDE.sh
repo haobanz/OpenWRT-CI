@@ -40,6 +40,11 @@ done
 # OpenClash is kept on the same dev branch used by the upstream CI project.
 find ../feeds/luci/ ../feeds/packages/ -maxdepth 3 -type d -iname '*openclash*' \
 	-prune -exec rm -rf {} + 2>/dev/null || true
+# `scripts/feeds install -a` can leave a same-name symlink under
+# package/feeds even after the source feed directory is removed. Remove those
+# links before copying the vendored package so Kconfig sees one definition.
+rm -rf ./feeds/luci/luci-app-openclash \
+	./feeds/packages/luci-app-openclash
 
 OPENCLASH_DIR=$(mktemp -d "$PWD/.openclash.XXXXXX")
 trap 'rm -rf "$OPENCLASH_DIR"' EXIT
