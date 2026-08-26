@@ -51,8 +51,9 @@ trap 'rm -rf "$OPENCLASH_DIR"' EXIT
 git clone --depth=1 --single-branch --branch dev \
 	'https://github.com/vernesong/OpenClash.git' "$OPENCLASH_DIR"
 
-OPENCLASH_PACKAGE=$(find "$OPENCLASH_DIR" -mindepth 1 -maxdepth 3 \
-	-type d -iname '*openclash*' -print -quit)
+OPENCLASH_MAKEFILE=$(find "$OPENCLASH_DIR" -mindepth 1 -maxdepth 3 \
+	-type f -path '*/luci-app-openclash/Makefile' -print -quit)
+OPENCLASH_PACKAGE=${OPENCLASH_MAKEFILE%/Makefile}
 if [[ -z "$OPENCLASH_PACKAGE" ]]; then
 	echo 'OpenClash package directory was not found' >&2
 	exit 1
