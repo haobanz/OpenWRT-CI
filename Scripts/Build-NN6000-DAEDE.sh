@@ -146,18 +146,27 @@ rm -f .config
 (cd package && bash "$CI_ROOT/Scripts/Packages-NN6000-DAEDE.sh")
 apply_local_patches
 
+# Remove any broken feed links/source paths recreated by feed installation.
+# Keep the vendored package as the only OpenClash definition in the tree.
+rm -rf \
+	feeds/luci/applications/luci-app-openclash \
+	feeds/packages/luci-app-openclash \
+	package/feeds/luci/luci-app-openclash \
+	package/feeds/packages/luci-app-openclash
+rm -f feeds/luci.tmp/info/.packageinfo-applications_luci-app-openclash
+
 # `scripts/feeds install -a` runs an early package scan before the vendored
 # packages are injected. Remove all generated package-scan state so a deleted
-# feed package cannot survive into the later defconfig scan.
+# feed package cannot survive into the later defconfig scan. Recreate the
+# complete generated-info directory because scan.mk also keeps dependency
+# fragments there.
 rm -f \
 	tmp/.packageinfo \
 	tmp/.config-package.in \
 	tmp/.packagedeps \
 	tmp/.packageauxvars \
-	tmp/.packageusergroup \
-	tmp/info/.files-packageinfo* \
-	tmp/info/.overrides-packageinfo* \
-	tmp/info/.packageinfo-*
+	tmp/.packageusergroup
+rm -rf tmp/info
 
 # The DAEDE packages are copied into the tree after feed installation. Force
 # OpenWrt to rescan package metadata so injected packages are visible to
