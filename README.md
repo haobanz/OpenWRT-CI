@@ -29,8 +29,8 @@ Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK，以�
 
 LuCI 的 `服务 -> Agent Hub` 提供一套通用设置：运行时、模型提供商、API
 地址、API Key、模型名、温度、最大输出 Token、监听范围、端口和 Telegram
-机器人。保存应用后，配置适配器会生成所选运行时的原生 JSON/TOML，只由
-`procd` 启动一个实例。
+机器人。保存应用后，配置适配器会生成所选运行时的原生 JSON/TOML，并重启
+所选运行时使渠道和模型配置立即生效；三个运行时中只启动所选的一个。
 
 Telegram 标签页统一管理 Bot Token、允许访问的数字用户 ID、群聊提及规则和
 可选 API 代理。适配器会分别转换为 PicoClaw `channel_list`、NullClaw

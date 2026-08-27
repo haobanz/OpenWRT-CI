@@ -54,13 +54,18 @@ for instance in $instance_names; do
 		first_start_ticks="$start_ticks"
 	fi
 
-	if [ "$instance" != 'picoclaw-web' ]; then
-		engine="$instance"
-		main_pid="$instance_pid"
-	elif [ -z "$engine" ]; then
-		engine='picoclaw'
-		main_pid="$instance_pid"
-	fi
+	case "$instance" in
+		picoclaw-web|picoclaw_web)
+			if [ -z "$engine" ]; then
+				engine='picoclaw'
+				main_pid="$instance_pid"
+			fi
+			;;
+		*)
+			engine="$instance"
+			main_pid="$instance_pid"
+			;;
+	esac
 done
 
 [ "$process_count" -gt 0 ] || emit_stopped
