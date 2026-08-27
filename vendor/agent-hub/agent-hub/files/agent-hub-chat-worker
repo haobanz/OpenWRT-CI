@@ -10,6 +10,7 @@ status_tmp="$job/.status.$$"
 stdout_tmp="$job/.stdout.$$"
 stderr_tmp="$job/.stderr.$$"
 result_tmp="$job/.result.$$"
+pico_log_tmp="$job/.pico-log.$$"
 
 case "$engine" in picoclaw|nullclaw|zeroclaw) ;; *) exit 2 ;; esac
 case "$home" in
@@ -36,6 +37,7 @@ case "$engine" in
 	picoclaw)
 		export PICOCLAW_HOME="$home"
 		export PICOCLAW_CONFIG="$home/config.json"
+		export PICOCLAW_LOG_FILE="$pico_log_tmp"
 		/usr/bin/timeout 180 /usr/bin/picoclaw --no-color agent \
 			-m "$message" -s 'luci:main' > "$stdout_tmp" 2> "$stderr_tmp"
 		code=$?
@@ -69,10 +71,11 @@ else
 		printf 'Command failed (exit %s).\n' "$code"
 		[ ! -s "$stderr_tmp" ] || head -c 262144 "$stderr_tmp"
 		[ ! -s "$stdout_tmp" ] || head -c 262144 "$stdout_tmp"
+		[ ! -s "$pico_log_tmp" ] || head -c 262144 "$pico_log_tmp"
 	} > "$result_tmp"
 	mv -f "$result_tmp" "$job/result"
 	write_status error
 fi
 
-rm -f "$stdout_tmp" "$stderr_tmp"
+rm -f "$stdout_tmp" "$stderr_tmp" "$pico_log_tmp"
 exit 0
