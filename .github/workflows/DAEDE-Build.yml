@@ -191,18 +191,20 @@ jobs:
           ls -lh "$upload_dir"
 
       - name: Publish DAEDE and Agent Hub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: DAEDE-NN6000-v2-${{ env.BUILD_DATE }}-${{ env.UPSTREAM_SHA }}
-          name: DAEDE NN6000 v2 ${{ env.BUILD_DATE }}
-          target_commitish: ${{ github.sha }}
-          files: upload/*
-          fail_on_unmatched_files: true
-          body: |
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag="DAEDE-NN6000-v2-${BUILD_DATE}-${UPSTREAM_SHA}"
+          title="DAEDE NN6000 v2 ${BUILD_DATE}"
+          notes="$RUNNER_TEMP/daede-release-notes.md"
+
+          cat > "$notes" <<EOF
             自维护 DAEDE NN6000 v2 固件。
 
             目标：Link NN6000 v2 / qualcommax-ipq60xx
-            ImmortalWrt 提交：${{ env.UPSTREAM_SHA }}
+            ImmortalWrt 提交：${UPSTREAM_SHA}
             daed/dae 版本：见仓库中的 vendor/daede/REVISION
 
             内容：OpenClash、dae、daed、luci-app-daede、匹配内核的
@@ -212,6 +214,51 @@ jobs:
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。
+          EOF
+
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" \
+              --title "$title" \
+              --target "$GITHUB_SHA" \
+              --notes-file "$notes" \
+              --draft
+          else
+            gh release create "$tag" \
+              --title "$title" \
+              --target "$GITHUB_SHA" \
+              --notes-file "$notes" \
+              --draft
+          fi
+
+          upload_asset() {
+            local asset="$1"
+            local attempt
+            for attempt in 1 2 3 4; do
+              if gh release upload "$tag" "$asset" --clobber; then
+                return 0
+              fi
+              if (( attempt == 4 )); then
+                echo "Failed to upload $asset after $attempt attempts" >&2
+                return 1
+              fi
+              echo "Upload failed for $asset; retrying ($attempt/4)" >&2
+              sleep "$((attempt * 15))"
+            done
+          }
+
+          while IFS= read -r -d '' asset; do
+            upload_asset "$asset"
+          done < <(
+            find upload -maxdepth 1 -type f ! -name '*squashfs-*.bin' -print0 | sort -z
+          )
+
+          while IFS= read -r -d '' asset; do
+            upload_asset "$asset"
+          done < <(
+            find upload -maxdepth 1 -type f -name '*squashfs-*.bin' -print0 | sort -z
+          )
+
+          gh release edit "$tag" --draft=false
 
   finalize:
     name: Record successful build

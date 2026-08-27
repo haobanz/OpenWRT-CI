@@ -27,7 +27,7 @@ prepare_root() {
 prepare_home() {
 	local home="$1"
 	mkdir -p "$home"
-	chown "$RUN_USER:$RUN_GROUP" "$home"
+	chown -R "$RUN_USER:$RUN_GROUP" "$home"
 	chmod 0700 "$home"
 }
 

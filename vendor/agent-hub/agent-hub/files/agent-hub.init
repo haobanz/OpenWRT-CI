@@ -19,7 +19,7 @@ prepare_roots() {
 prepare_home() {
 	local home="$1"
 	mkdir -p "$home"
-	chown agenthub:agenthub "$home"
+	chown -R agenthub:agenthub "$home"
 	chmod 0700 "$home"
 }
 
