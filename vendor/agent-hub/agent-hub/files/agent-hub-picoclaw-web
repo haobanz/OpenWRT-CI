@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 4 ] || exit 2
+
+web_host="$1"
+web_port="$2"
+gateway_port="$3"
+config_file="$4"
+
+attempt=0
+while ! wget -qO- "http://127.0.0.1:$gateway_port/health" >/dev/null 2>&1; do
+	attempt=$((attempt + 1))
+	if [ "$attempt" -ge 15 ]; then
+		logger -t agent-hub 'PicoClaw WebUI is waiting for an unavailable gateway'
+		exit 1
+	fi
+	sleep 1
+done
+
+exec /usr/bin/picoclaw-launcher \
+	-host "$web_host" \
+	-port "$web_port" \
+	-no-browser \
+	-console \
+	"$config_file"

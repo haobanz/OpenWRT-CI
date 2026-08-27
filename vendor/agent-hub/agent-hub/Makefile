@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=agent-hub
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -37,6 +37,9 @@ define Package/agent-hub/install
 
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/agent-hub-generate $(1)/usr/libexec/agent-hub-generate
+	$(INSTALL_BIN) ./files/agent-hub-chat $(1)/usr/libexec/agent-hub-chat
+	$(INSTALL_BIN) ./files/agent-hub-chat-worker $(1)/usr/libexec/agent-hub-chat-worker
+	$(INSTALL_BIN) ./files/agent-hub-picoclaw-web $(1)/usr/libexec/agent-hub-picoclaw-web
 
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/agent-hubctl $(1)/usr/sbin/agent-hubctl

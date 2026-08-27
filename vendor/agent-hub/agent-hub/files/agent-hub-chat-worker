@@ -1,0 +1,78 @@
+#!/bin/sh
+set -u
+
+[ "$#" -eq 3 ] || exit 2
+
+engine="$1"
+home="$2"
+job="$3"
+status_tmp="$job/.status.$$"
+stdout_tmp="$job/.stdout.$$"
+stderr_tmp="$job/.stderr.$$"
+result_tmp="$job/.result.$$"
+
+case "$engine" in picoclaw|nullclaw|zeroclaw) ;; *) exit 2 ;; esac
+case "$home" in
+	"/etc/agent-hub/managed/$engine"|"/etc/agent-hub/native/$engine") ;;
+	*) exit 2 ;;
+esac
+job_id="${job##*/}"
+[ "${job%/*}" = '/tmp/agent-hub-chat' ] || exit 2
+[ "${#job_id}" -eq 32 ] || exit 2
+case "$job_id" in *[!0-9a-f]*) exit 2 ;; esac
+[ -r "$job/prompt" ] || exit 2
+
+write_status() {
+	printf '%s\n' "$1" > "$status_tmp"
+	mv -f "$status_tmp" "$job/status"
+}
+
+message="$(cat "$job/prompt")"
+rm -f "$job/prompt"
+mkdir -p "$home/workspace"
+export HOME="$home"
+
+case "$engine" in
+	picoclaw)
+		export PICOCLAW_HOME="$home"
+		export PICOCLAW_CONFIG="$home/config.json"
+		/usr/bin/timeout 180 /usr/bin/picoclaw --no-color agent \
+			-m "$message" -s 'luci:main' > "$stdout_tmp" 2> "$stderr_tmp"
+		code=$?
+		;;
+	nullclaw)
+		export NULLCLAW_HOME="$home"
+		/usr/bin/timeout 180 /usr/bin/nullclaw agent \
+			-m "$message" -s 'luci:main' --workspace "$home/workspace" \
+			> "$stdout_tmp" 2> "$stderr_tmp"
+		code=$?
+		;;
+	zeroclaw)
+		export ZEROCLAW_CONFIG_DIR="$home"
+		/usr/bin/timeout 180 /usr/bin/zeroclaw --config-dir "$home" agent \
+			-a main -m "$message" --session-state-file "$home/luci-session.json" \
+			> "$stdout_tmp" 2> "$stderr_tmp"
+		code=$?
+		;;
+esac
+
+if [ "$code" -eq 0 ]; then
+	if [ "$engine" = 'picoclaw' ]; then
+		sed '1,9d; 10s/^[^ ]* //' "$stdout_tmp" > "$result_tmp"
+	else
+		cp "$stdout_tmp" "$result_tmp"
+	fi
+	mv -f "$result_tmp" "$job/result"
+	write_status done
+else
+	{
+		printf 'Command failed (exit %s).\n' "$code"
+		[ ! -s "$stderr_tmp" ] || head -c 262144 "$stderr_tmp"
+		[ ! -s "$stdout_tmp" ] || head -c 262144 "$stdout_tmp"
+	} > "$result_tmp"
+	mv -f "$result_tmp" "$job/result"
+	write_status error
+fi
+
+rm -f "$stdout_tmp" "$stderr_tmp"
+exit 0

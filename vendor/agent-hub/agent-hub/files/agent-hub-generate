@@ -107,7 +107,9 @@ load_common() {
 
 generate_picoclaw() {
 	local home="$ROOT/picoclaw"
+	local pico_token token_file web_ui
 	prepare_home "$home"
+	config_get_bool web_ui "$SECTION" picoclaw_web_ui 0
 	json_init
 	json_add_int version 3
 	json_add_object agents
@@ -138,6 +140,36 @@ generate_picoclaw() {
 	json_add_int port "$port"
 	json_add_string log_level warn
 	json_close_object
+	if [ "$web_ui" -eq 1 ]; then
+		token_file="$home/.pico-token"
+		if [ -s "$token_file" ]; then
+			pico_token="$(cat "$token_file")"
+		else
+			pico_token="$(head -c 24 /dev/urandom | hexdump -v -e '1/1 "%02x"')"
+			[ "${#pico_token}" -eq 48 ] || die 'cannot generate PicoClaw WebUI token'
+			printf '%s\n' "$pico_token" > "$token_file"
+			chown "$RUN_USER:$RUN_GROUP" "$token_file"
+			chmod 0600 "$token_file"
+		fi
+		json_add_object channel_list
+		json_add_object pico
+		json_add_boolean enabled 1
+		json_add_string type pico
+		json_add_array allow_from
+		json_close_array
+		json_add_object settings
+		json_add_string token "$pico_token"
+		json_add_boolean allow_token_query 0
+		json_add_array allow_origins
+		json_close_array
+		json_add_int ping_interval 30
+		json_add_int read_timeout 60
+		json_add_int write_timeout 10
+		json_add_int max_connections 16
+		json_close_object
+		json_close_object
+		json_close_object
+	fi
 	write_json "$home/config.json"
 }
 
@@ -215,6 +247,7 @@ generate_zeroclaw() {
 		printf 'host = "%s"\n' "$host"
 		printf 'port = %s\n' "$port"
 		printf 'require_pairing = true\n'
+		printf 'web_dist_dir = "/usr/share/zeroclawlabs/web/dist"\n'
 		if [ "$allow_public" = '1' ]; then
 			printf 'allow_public_bind = true\n'
 		else

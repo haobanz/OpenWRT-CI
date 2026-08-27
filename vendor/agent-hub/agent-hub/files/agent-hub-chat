@@ -1,0 +1,143 @@
+#!/bin/sh
+set -e
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+CONFIG='agent-hub'
+JOB_ROOT='/tmp/agent-hub-chat'
+WORKER='/usr/libexec/agent-hub-chat-worker'
+MAX_MESSAGE_BYTES=32768
+
+emit_json() {
+	local state="$1"
+	local job_id="${2:-}"
+	local output="${3:-}"
+	json_init
+	json_add_string status "$state"
+	[ -z "$job_id" ] || json_add_string job_id "$job_id"
+	[ -z "$output" ] || json_add_string output "$output"
+	json_dump
+}
+
+fail() {
+	emit_json error '' "$1"
+	exit 1
+}
+
+valid_job_id() {
+	[ "${#1}" -eq 32 ] || return 1
+	case "$1" in *[!0-9a-f]*) return 1 ;; esac
+	return 0
+}
+
+new_job_id() {
+	head -c 16 /dev/urandom | hexdump -v -e '1/1 "%02x"'
+}
+
+prepare_job_root() {
+	mkdir -p "$JOB_ROOT"
+	chown root:agenthub "$JOB_ROOT"
+	chmod 0710 "$JOB_ROOT"
+}
+
+runtime_home() {
+	local engine="$1"
+	local managed
+	config_get_bool managed main managed_config 1
+	if [ "$managed" -eq 1 ]; then
+		printf '/etc/agent-hub/managed/%s\n' "$engine"
+	else
+		printf '/etc/agent-hub/native/%s\n' "$engine"
+	fi
+}
+
+submit_job() {
+	local message="$1"
+	local bytes enabled engine home config_file job_id job
+
+	[ -n "$message" ] || fail 'Message is empty'
+	printf '%s' "$message" | grep -q '[^[:space:]]' || fail 'Message is empty'
+	bytes="$(printf '%s' "$message" | wc -c)"
+	[ "$bytes" -le "$MAX_MESSAGE_BYTES" ] || fail 'Message is too large'
+
+	config_load "$CONFIG"
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || fail 'Agent Hub is disabled'
+	config_get engine main engine 'picoclaw'
+	case "$engine" in picoclaw|nullclaw|zeroclaw) ;; *) fail 'Unsupported runtime' ;; esac
+	/etc/init.d/agent-hub status >/dev/null 2>&1 || fail 'Agent Hub is not running'
+
+	home="$(runtime_home "$engine")"
+	case "$engine" in
+		picoclaw|nullclaw) config_file="$home/config.json" ;;
+		zeroclaw) config_file="$home/config.toml" ;;
+	esac
+	[ -s "$config_file" ] || fail 'Runtime configuration is missing'
+	[ -x "$WORKER" ] || fail 'Chat worker is not installed'
+
+	prepare_job_root
+	job_id="$(new_job_id)"
+	valid_job_id "$job_id" || fail 'Cannot generate a job ID'
+	job="$JOB_ROOT/$job_id"
+	[ ! -e "$job" ] || fail 'Job ID collision'
+	umask 077
+	mkdir "$job"
+	printf '%s' "$message" > "$job/prompt"
+	printf '%s\n' running > "$job/status"
+	chown -R agenthub:agenthub "$job"
+	chmod 0700 "$job"
+
+	if ! /sbin/start-stop-daemon -S -b \
+		-c agenthub:agenthub \
+		-d "$home" \
+		-p "$job/pid" \
+		-m \
+		-O "$job/worker.log" \
+		-x "$WORKER" -- "$engine" "$home" "$job"; then
+		printf '%s\n' error > "$job/status"
+		printf '%s\n' 'Unable to start chat worker' > "$job/result"
+		fail 'Unable to start chat worker'
+	fi
+
+	emit_json running "$job_id"
+}
+
+job_status() {
+	local job_id="$1"
+	local job state pid output
+	valid_job_id "$job_id" || fail 'Invalid job ID'
+	job="$JOB_ROOT/$job_id"
+	[ -d "$job" ] || fail 'Job not found'
+	state="$(cat "$job/status" 2>/dev/null || printf '%s' error)"
+	case "$state" in
+		running)
+			pid="$(cat "$job/pid" 2>/dev/null || true)"
+			if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+				state='error'
+				printf '%s\n' error > "$job/status"
+				[ -s "$job/result" ] || printf '%s\n' 'Chat worker stopped unexpectedly' > "$job/result"
+			fi
+			;;
+		done|error) ;;
+		*) state='error' ;;
+	esac
+	if [ "$state" = 'running' ]; then
+		emit_json running "$job_id"
+	else
+		output="$(head -c 524288 "$job/result" 2>/dev/null || true)"
+		emit_json "$state" "$job_id" "$output"
+	fi
+}
+
+case "${1:-}" in
+	submit)
+		[ "$#" -eq 2 ] || fail 'Usage: agent-hub-chat submit <message>'
+		submit_job "$2"
+		;;
+	status)
+		[ "$#" -eq 2 ] || fail 'Usage: agent-hub-chat status <job-id>'
+		job_status "$2"
+		;;
+	*) fail 'Usage: agent-hub-chat <submit|status>' ;;
+esac

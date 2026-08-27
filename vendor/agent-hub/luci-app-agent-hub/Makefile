@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-agent-hub
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -18,7 +18,7 @@ define Package/luci-app-agent-hub
 endef
 
 define Package/luci-app-agent-hub/description
-  LuCI interface for selecting and configuring one lightweight AI agent runtime.
+  LuCI interface for configuring, controlling, and chatting with one AI agent runtime.
 endef
 
 define Build/Compile

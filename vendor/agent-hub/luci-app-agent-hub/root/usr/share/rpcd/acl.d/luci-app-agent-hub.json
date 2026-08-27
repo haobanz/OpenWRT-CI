@@ -9,7 +9,8 @@
 		},
 		"write": {
 			"file": {
-				"/etc/init.d/agent-hub *": [ "exec" ]
+				"/etc/init.d/agent-hub *": [ "exec" ],
+				"/usr/libexec/agent-hub-chat *": [ "exec" ]
 			},
 			"uci": [ "agent-hub" ]
 		}

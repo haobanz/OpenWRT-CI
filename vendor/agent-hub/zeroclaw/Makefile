@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=zeroclaw
 PKG_VERSION:=0.8.4
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-linux-aarch64.tar.gz
 PKG_SOURCE_URL:=https://github.com/zeroclaw-labs/zeroclaw/releases/download/v$(PKG_VERSION)/zeroclaw-aarch64-unknown-linux-musl.tar.gz?
@@ -23,13 +23,13 @@ define Package/zeroclaw
 endef
 
 define Package/zeroclaw/description
-  ZeroClaw ARM64 musl static runtime, packaged for OpenWrt.
+  ZeroClaw ARM64 musl static runtime and official Web Dashboard, packaged for OpenWrt.
 endef
 
 define Build/Prepare
 	rm -rf $(PKG_BUILD_DIR)
 	mkdir -p $(PKG_BUILD_DIR)
-	$(HOST_TAR) -xzf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR) zeroclaw
+	$(HOST_TAR) -xzf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR) zeroclaw web/dist
 endef
 
 define Build/Configure
@@ -41,6 +41,8 @@ endef
 define Package/zeroclaw/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/zeroclaw $(1)/usr/bin/zeroclaw
+	$(INSTALL_DIR) $(1)/usr/share/zeroclawlabs/web/dist
+	$(CP) $(PKG_BUILD_DIR)/web/dist/. $(1)/usr/share/zeroclawlabs/web/dist/
 endef
 
 $(eval $(call BuildPackage,zeroclaw))
