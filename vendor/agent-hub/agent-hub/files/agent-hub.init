@@ -24,7 +24,8 @@ prepare_home() {
 }
 
 start_service() {
-	local enabled engine managed listen_scope port respawn host home config_file config_revision
+	local enabled engine managed listen_scope port respawn root_access run_user run_group
+	local host home config_file config_revision
 	local web_ui web_scope web_port web_host
 	config_load "$CONFIG"
 	config_get_bool enabled main enabled 0
@@ -34,6 +35,7 @@ start_service() {
 	config_get listen_scope main listen_scope 'loopback'
 	config_get port main port '18790'
 	config_get_bool respawn main respawn 1
+	config_get_bool root_access main root_access 0
 	config_get_bool web_ui main picoclaw_web_ui 0
 	config_get web_scope main picoclaw_web_scope 'lan'
 	config_get web_port main picoclaw_web_port '18800'
@@ -47,6 +49,13 @@ start_service() {
 		lan) host='0.0.0.0' ;;
 		*) logger -t agent-hub "unsupported listen scope: $listen_scope"; return 1 ;;
 	esac
+	if [ "$root_access" -eq 1 ]; then
+		run_user='root'
+		run_group='root'
+	else
+		run_user='agenthub'
+		run_group='agenthub'
+	fi
 	prepare_roots || {
 		logger -t agent-hub 'failed to prepare runtime directories'
 		return 1
@@ -90,7 +99,8 @@ start_service() {
 				"PICOCLAW_CONFIG=$home/config.json" \
 				"PICOCLAW_GATEWAY_HOST=$host" \
 				"PICOCLAW_GATEWAY_PORT=$port" \
-				"AGENT_HUB_CONFIG_REVISION=$config_revision"
+				"AGENT_HUB_CONFIG_REVISION=$config_revision" \
+				"AGENT_HUB_ROOT_ACCESS=$root_access"
 			;;
 		nullclaw)
 			procd_set_param command /usr/bin/nullclaw gateway \
@@ -98,7 +108,8 @@ start_service() {
 			procd_set_param env \
 				"HOME=$home" \
 				"NULLCLAW_HOME=$home" \
-				"AGENT_HUB_CONFIG_REVISION=$config_revision"
+				"AGENT_HUB_CONFIG_REVISION=$config_revision" \
+				"AGENT_HUB_ROOT_ACCESS=$root_access"
 			;;
 		zeroclaw)
 			procd_set_param command /usr/bin/zeroclaw --config-dir "$home" daemon \
@@ -106,11 +117,12 @@ start_service() {
 			procd_set_param env \
 				"HOME=$home" \
 				"ZEROCLAW_CONFIG_DIR=$home" \
-				"AGENT_HUB_CONFIG_REVISION=$config_revision"
+				"AGENT_HUB_CONFIG_REVISION=$config_revision" \
+				"AGENT_HUB_ROOT_ACCESS=$root_access"
 			;;
 	esac
-	procd_set_param user agenthub
-	procd_set_param group agenthub
+	procd_set_param user "$run_user"
+	procd_set_param group "$run_group"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	[ "$respawn" -eq 1 ] && procd_set_param respawn 3600 5 5

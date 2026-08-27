@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=agent-hub
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -18,7 +18,8 @@ endef
 
 define Package/agent-hub/description
   Generates native configuration for PicoClaw, NullClaw, and ZeroClaw from
-  one UCI profile and runs exactly one selected runtime under a non-root user.
+  one UCI profile and runs exactly one selected runtime, unprivileged by default
+  with an explicit optional root-access mode for router administration.
 endef
 
 define Build/Compile

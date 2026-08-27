@@ -37,16 +37,19 @@ Telegram 标签页统一管理 Bot Token、允许访问的数字用户 ID、群�
 `channels.telegram.accounts` 和 ZeroClaw `channels`/`peer_groups`。启用时必须
 至少配置一个用户 ID，空白名单不会退化为公开机器人。
 
-同一页面带有异步聊天控制台，三种运行时都可以直接对话，模型子进程仍以
-`agenthub` 非 root 账号运行。顶部状态栏实时显示 PID、CPU、RSS 内存占用和
+同一页面带有异步聊天控制台，三种运行时都可以直接对话。顶部状态栏实时显示
+PID、CPU、RSS 内存占用和
 运行时长，不需要额外的常驻监控进程。PicoClaw 的官方 WebUI Launcher 也包含
 在 APK 中，可在 Web UI 标签页启用，默认使用 `18800` 端口并要求首次设置登录密码。
 ZeroClaw APK 包含官方 Dashboard；将运行时监听范围设为 LAN 后，可从 Agent
 Hub 顶部的“Open Web UI”按钮进入。NullClaw 当前没有随官方 ARM64 单文件
 版本发布完整 Dashboard，因此使用 Agent Hub 控制台或其聊天渠道。
 
-服务默认关闭并只监听路由器本机。运行进程使用独立的 `agenthub` 非 root
-账号；PicoClaw 和 NullClaw 使用工作区限制，ZeroClaw 使用自己的风险配置。
+服务默认关闭并只监听路由器本机。运行进程默认使用独立的 `agenthub` 非 root
+账号；Advanced 中可显式启用 Root 系统权限，让所选运行时和 LuCI 聊天任务执行
+完整的路由器诊断与管理命令。Root 模式会把模型和已启用的聊天渠道提升为完整
+系统控制入口，只应配合可信模型、私有监听范围和严格的 Telegram 用户白名单使用。
+PicoClaw 和 NullClaw 使用工作区限制，ZeroClaw 使用自己的风险配置。
 通用配置文件位于 `/etc/agent-hub/managed`。关闭“使用通用设置”后，可以在
 `/etc/agent-hub/native/<运行时>` 维护完整的原生配置。
 

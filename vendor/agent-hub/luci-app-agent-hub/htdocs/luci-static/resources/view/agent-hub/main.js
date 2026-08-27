@@ -526,6 +526,11 @@ return view.extend({
 		o.default = o.enabled;
 		o.rmempty = false;
 
+		o = s.taboption('advanced', form.Flag, 'root_access', _('Root system access'));
+		o.default = o.disabled;
+		o.rmempty = false;
+		o.description = _('Grants the selected agent full control of the router. Enable only for trusted models and private access channels.');
+
 		o = s.taboption('advanced', form.Flag, 'respawn', _('Restart after failure'));
 		o.default = o.enabled;
 		o.rmempty = false;

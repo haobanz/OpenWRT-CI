@@ -210,8 +210,9 @@ jobs:
             内容：OpenClash、dae、daed、luci-app-daede、匹配内核的
             vmlinux-btf、BPF/XDP 内核模块，以及 Agent Hub 管理的 PicoClaw、
             NullClaw、ZeroClaw。三个 Agent 运行时同时安装，但只启动所选的一个；
-            LuCI 提供统一聊天控制台和三运行时通用 Telegram 机器人设置；配置
-            应用后会重启所选运行时，确保渠道立即生效。固件还包含 PicoClaw
+            LuCI 提供统一聊天控制台和三运行时通用 Telegram 机器人设置，以及
+            默认关闭的可选 Root 系统权限；配置应用后会重启所选运行时，确保渠道
+            和权限立即生效。固件还包含 PicoClaw
             Launcher 与 ZeroClaw Dashboard。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始

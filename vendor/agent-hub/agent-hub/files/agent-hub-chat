@@ -54,7 +54,7 @@ runtime_home() {
 
 submit_job() {
 	local message="$1"
-	local bytes enabled engine home config_file job_id job
+	local bytes enabled engine root_access run_account home config_file job_id job
 
 	[ -n "$message" ] || fail 'Message is empty'
 	printf '%s' "$message" | grep -q '[^[:space:]]' || fail 'Message is empty'
@@ -65,6 +65,12 @@ submit_job() {
 	config_get_bool enabled main enabled 0
 	[ "$enabled" -eq 1 ] || fail 'Agent Hub is disabled'
 	config_get engine main engine 'picoclaw'
+	config_get_bool root_access main root_access 0
+	if [ "$root_access" -eq 1 ]; then
+		run_account='root:root'
+	else
+		run_account='agenthub:agenthub'
+	fi
 	case "$engine" in picoclaw|nullclaw|zeroclaw) ;; *) fail 'Unsupported runtime' ;; esac
 	/etc/init.d/agent-hub status >/dev/null 2>&1 || fail 'Agent Hub is not running'
 
@@ -89,7 +95,7 @@ submit_job() {
 	chmod 0700 "$job"
 
 	if ! /sbin/start-stop-daemon -S -b \
-		-c agenthub:agenthub \
+		-c "$run_account" \
 		-d "$home" \
 		-p "$job/pid" \
 		-m \
