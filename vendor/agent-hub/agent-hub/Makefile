@@ -37,6 +37,7 @@ define Package/agent-hub/install
 
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/agent-hub-generate $(1)/usr/libexec/agent-hub-generate
+	$(INSTALL_BIN) ./files/agent-hub-metrics $(1)/usr/libexec/agent-hub-metrics
 	$(INSTALL_BIN) ./files/agent-hub-chat $(1)/usr/libexec/agent-hub-chat
 	$(INSTALL_BIN) ./files/agent-hub-chat-worker $(1)/usr/libexec/agent-hub-chat-worker
 	$(INSTALL_BIN) ./files/agent-hub-picoclaw-web $(1)/usr/libexec/agent-hub-picoclaw-web

@@ -1,0 +1,92 @@
+#!/bin/sh
+set -e
+
+. /usr/share/libubox/jshn.sh
+
+emit_stopped() {
+	json_init
+	json_add_boolean running 0
+	json_dump
+	printf '\n'
+	exit 0
+}
+
+service_json="$(ubus call service list '{"name":"agent-hub"}' 2>/dev/null || true)"
+[ -n "$service_json" ] || emit_stopped
+json_load "$service_json" || emit_stopped
+json_select agent-hub 2>/dev/null || emit_stopped
+json_select instances 2>/dev/null || emit_stopped
+json_get_keys instance_names
+
+engine=''
+main_pid=''
+process_count=0
+process_ticks=0
+rss_kb=0
+first_start_ticks=0
+
+for instance in $instance_names; do
+	json_select "$instance"
+	json_get_var instance_running running
+	json_get_var instance_pid pid
+	json_select ..
+
+	case "$instance_running" in 1|true) ;; *) continue ;; esac
+	case "$instance_pid" in ''|*[!0-9]*) continue ;; esac
+	[ -r "/proc/$instance_pid/stat" ] || continue
+
+	stat_line="$(cat "/proc/$instance_pid/stat" 2>/dev/null || true)"
+	[ -n "$stat_line" ] || continue
+	stat_fields="${stat_line##*) }"
+	set -- $stat_fields
+	[ "$#" -ge 20 ] || continue
+	utime="${12}"
+	stime="${13}"
+	start_ticks="${20}"
+	case "$utime:$stime:$start_ticks" in *[!0-9:]*) continue ;; esac
+
+	instance_rss="$(awk '$1 == "VmRSS:" { print $2; exit }' "/proc/$instance_pid/status" 2>/dev/null || true)"
+	case "$instance_rss" in ''|*[!0-9]*) instance_rss=0 ;; esac
+	process_count=$((process_count + 1))
+	process_ticks=$((process_ticks + utime + stime))
+	rss_kb=$((rss_kb + instance_rss))
+	if [ "$first_start_ticks" -eq 0 ] || [ "$start_ticks" -lt "$first_start_ticks" ]; then
+		first_start_ticks="$start_ticks"
+	fi
+
+	if [ "$instance" != 'picoclaw-web' ]; then
+		engine="$instance"
+		main_pid="$instance_pid"
+	elif [ -z "$engine" ]; then
+		engine='picoclaw'
+		main_pid="$instance_pid"
+	fi
+done
+
+[ "$process_count" -gt 0 ] || emit_stopped
+
+system_ticks="$(awk '/^cpu / { total = 0; for (i = 2; i <= 9; i++) total += $i; printf "%.0f\n", total; exit }' /proc/stat)"
+memory_total_kb="$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo)"
+cpu_count="$(grep -c '^processor[[:space:]]*:' /proc/cpuinfo 2>/dev/null || true)"
+system_uptime="$(awk '{ print int($1); exit }' /proc/uptime)"
+case "$cpu_count" in ''|0|*[!0-9]*) cpu_count=1 ;; esac
+case "$memory_total_kb" in ''|*[!0-9]*) memory_total_kb=0 ;; esac
+case "$system_ticks" in ''|*[!0-9]*) system_ticks=0 ;; esac
+case "$system_uptime" in ''|*[!0-9]*) system_uptime=0 ;; esac
+
+uptime_seconds=$((system_uptime - first_start_ticks / 100))
+[ "$uptime_seconds" -ge 0 ] || uptime_seconds=0
+
+json_init
+json_add_boolean running 1
+json_add_string engine "$engine"
+json_add_int pid "$main_pid"
+json_add_int processes "$process_count"
+json_add_int process_ticks "$process_ticks"
+json_add_int system_ticks "$system_ticks"
+json_add_int cpu_count "$cpu_count"
+json_add_int rss_kb "$rss_kb"
+json_add_int memory_total_kb "$memory_total_kb"
+json_add_int uptime_seconds "$uptime_seconds"
+json_dump
+printf '\n'

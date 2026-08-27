@@ -16,20 +16,95 @@ const callServiceList = rpc.declare({
 });
 
 const CHAT_COMMAND = '/usr/libexec/agent-hub-chat';
+const METRICS_COMMAND = '/usr/libexec/agent-hub-metrics';
 let chatBusy = false;
 let chatTimer = null;
 let chatMessages = [];
 let chatServiceRunning = false;
+let previousMetrics = null;
 
-function getServiceStatus() {
+function getProcdStatus() {
 	return L.resolveDefault(callServiceList('agent-hub'), {}).then(function(res) {
 		const instances = res['agent-hub'] && res['agent-hub'].instances || {};
+		let fallback = null;
 		for (const name in instances) {
-			if (instances[name].running)
-				return { running: true, engine: name === 'picoclaw-web' ? 'picoclaw' : name };
+			if (!instances[name].running)
+				continue;
+			fallback = { running: true, engine: name === 'picoclaw-web' ? 'picoclaw' : name };
+			if (name !== 'picoclaw-web')
+				return fallback;
 		}
-		return { running: false, engine: null };
+		return fallback || { running: false, engine: null };
 	});
+}
+
+function metricNumber(payload, key) {
+	const value = Number(payload[key]);
+	return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseMetrics(res) {
+	if (!res || res.code !== 0)
+		throw new Error(res && (res.stderr || res.stdout) || _('Unable to read resource usage'));
+
+	const payload = JSON.parse(res.stdout || '{}');
+	if (!payload.running) {
+		previousMetrics = null;
+		return { running: false, engine: null };
+	}
+
+	const status = {
+		running: true,
+		engine: payload.engine || null,
+		pid: metricNumber(payload, 'pid'),
+		processes: metricNumber(payload, 'processes'),
+		processTicks: metricNumber(payload, 'process_ticks'),
+		systemTicks: metricNumber(payload, 'system_ticks'),
+		cpuCount: Math.max(1, metricNumber(payload, 'cpu_count')),
+		rssKiB: metricNumber(payload, 'rss_kb'),
+		memoryTotalKiB: metricNumber(payload, 'memory_total_kb'),
+		uptimeSeconds: metricNumber(payload, 'uptime_seconds')
+	};
+
+	let cpuPercent = status.uptimeSeconds > 0
+		? status.processTicks / status.uptimeSeconds
+		: 0;
+	if (previousMetrics && previousMetrics.pid === status.pid &&
+	    status.processTicks >= previousMetrics.processTicks &&
+	    status.systemTicks > previousMetrics.systemTicks) {
+		cpuPercent = (status.processTicks - previousMetrics.processTicks) /
+			(status.systemTicks - previousMetrics.systemTicks) * status.cpuCount * 100;
+	}
+	status.cpuPercent = Math.max(0, Math.min(status.cpuCount * 100, cpuPercent));
+	status.memoryPercent = status.memoryTotalKiB > 0
+		? status.rssKiB / status.memoryTotalKiB * 100
+		: 0;
+	previousMetrics = status;
+	return status;
+}
+
+function getServiceStatus() {
+	return fs.exec(METRICS_COMMAND, []).then(parseMetrics).catch(getProcdStatus);
+}
+
+function formatKiB(value) {
+	if (value >= 1024 * 1024)
+		return '%s GB'.format((value / (1024 * 1024)).toFixed(1));
+	return '%s MB'.format((value / 1024).toFixed(1));
+}
+
+function formatDuration(value) {
+	const seconds = Math.max(0, Math.floor(value));
+	const days = Math.floor(seconds / 86400);
+	const hours = Math.floor(seconds % 86400 / 3600);
+	const minutes = Math.floor(seconds % 3600 / 60);
+	if (days > 0)
+		return '%dd %dh'.format(days, hours);
+	if (hours > 0)
+		return '%dh %dm'.format(hours, minutes);
+	if (minutes > 0)
+		return '%dm %ds'.format(minutes, seconds % 60);
+	return '%ds'.format(seconds);
 }
 
 function renderStatus(status) {
@@ -37,10 +112,28 @@ function renderStatus(status) {
 	const label = status.running
 		? '%s: %s'.format(_('Running'), status.engine)
 		: _('Stopped');
+	const items = [ E('span', {
+		style: 'color:%s;font-weight:600;white-space:nowrap'.format(color)
+	}, label) ];
 
-	return E('span', {
-		style: 'color:%s;font-weight:600'.format(color)
-	}, label);
+	if (status.running && status.pid) {
+		items.push(
+			E('span', { style: 'color:#7a7a7a;white-space:nowrap' }, 'PID %s'.format(status.pid)),
+			E('span', { style: 'color:#7a7a7a;white-space:nowrap' },
+				'CPU %s%'.format(status.cpuPercent.toFixed(1))),
+			E('span', { style: 'color:#7a7a7a;white-space:nowrap' },
+				'%s %s (%s%)'.format(_('Memory'), formatKiB(status.rssKiB), status.memoryPercent.toFixed(1))),
+			E('span', { style: 'color:#7a7a7a;white-space:nowrap' },
+				'%s %s'.format(_('Uptime'), formatDuration(status.uptimeSeconds)))
+		);
+		if (status.processes > 1)
+			items.push(E('span', { style: 'color:#7a7a7a;white-space:nowrap' },
+				'%s %s'.format(_('Processes'), status.processes)));
+	}
+
+	return E('div', {
+		style: 'display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-width:0'
+	}, items);
 }
 
 function runServiceAction(action) {
@@ -159,6 +252,7 @@ function submitChat() {
 function renderChatSection(status) {
 	chatServiceRunning = status.running;
 	return E('div', { class: 'cbi-section' }, [
+		E('style', {}, '@media (max-width:600px){#agent-hub-chat-actions{margin-right:44px}#maincontent .cbi-tabmenu{width:calc(100% - 44px)}}'),
 		E('h3', {}, _('Console')),
 		E('div', {
 			id: 'agent-hub-chat-history',
@@ -184,7 +278,7 @@ function renderChatSection(status) {
 			style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;flex-wrap:wrap'
 		}, [
 			E('span', { id: 'agent-hub-chat-progress', style: 'color:#7a7a7a' }, ''),
-			E('div', { style: 'display:flex;gap:8px' }, [
+			E('div', { id: 'agent-hub-chat-actions', style: 'display:flex;gap:8px' }, [
 				E('button', {
 					class: 'btn cbi-button cbi-button-neutral',
 					type: 'button',

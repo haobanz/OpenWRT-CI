@@ -32,8 +32,9 @@ LuCI 的 `服务 -> Agent Hub` 提供一套通用设置：运行时、模型提�
 配置适配器会生成所选运行时的原生 JSON/TOML，只由 `procd` 启动一个实例。
 
 同一页面带有异步聊天控制台，三种运行时都可以直接对话，模型子进程仍以
-`agenthub` 非 root 账号运行。PicoClaw 的官方 WebUI Launcher 也包含在 APK
-中，可在 Web UI 标签页启用，默认使用 `18800` 端口并要求首次设置登录密码。
+`agenthub` 非 root 账号运行。顶部状态栏实时显示 PID、CPU、RSS 内存占用和
+运行时长，不需要额外的常驻监控进程。PicoClaw 的官方 WebUI Launcher 也包含
+在 APK 中，可在 Web UI 标签页启用，默认使用 `18800` 端口并要求首次设置登录密码。
 ZeroClaw APK 包含官方 Dashboard；将运行时监听范围设为 LAN 后，可从 Agent
 Hub 顶部的“Open Web UI”按钮进入。NullClaw 当前没有随官方 ARM64 单文件
 版本发布完整 Dashboard，因此使用 Agent Hub 控制台或其聊天渠道。

@@ -2,6 +2,9 @@
 	"luci-app-agent-hub": {
 		"description": "Grant access to Agent Hub configuration",
 		"read": {
+			"file": {
+				"/usr/libexec/agent-hub-metrics": [ "exec" ]
+			},
 			"ubus": {
 				"service": [ "list" ]
 			},
