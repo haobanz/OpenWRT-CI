@@ -386,6 +386,7 @@ return view.extend({
 		s.tab('general', _('General'));
 		s.tab('model', _('Model'));
 		s.tab('network', _('Network'));
+		s.tab('telegram', _('Telegram'));
 		s.tab('web', _('Web UI'));
 		s.tab('advanced', _('Advanced'));
 
@@ -399,6 +400,48 @@ return view.extend({
 		o.value('zeroclaw', 'ZeroClaw 0.8.4');
 		o.default = 'picoclaw';
 		o.rmempty = false;
+
+		o = s.taboption('telegram', form.Flag, 'telegram_enabled', _('Enable Telegram bot'));
+		o.default = o.disabled;
+		o.rmempty = false;
+		o.depends('managed_config', '1');
+
+		o = s.taboption('telegram', form.Value, 'telegram_bot_token', _('Bot token'));
+		o.password = true;
+		o.placeholder = '123456789:AA...';
+		o.rmempty = false;
+		o.depends({ managed_config: '1', telegram_enabled: '1' });
+		o.validate = function(sectionId, value) {
+			return /^[0-9]+:[A-Za-z0-9_-]{20,}$/.test(value || '')
+				? true : _('Enter a valid Telegram bot token');
+		};
+
+		o = s.taboption('telegram', form.DynamicList, 'telegram_allow_from', _('Allowed user IDs'));
+		o.placeholder = '123456789';
+		o.rmempty = false;
+		o.depends({ managed_config: '1', telegram_enabled: '1' });
+		o.validate = function(sectionId, value) {
+			if (!value)
+				return true;
+			return /^[1-9][0-9]{0,19}$/.test(value || '')
+				? true : _('Use a positive numeric Telegram user ID');
+		};
+
+		o = s.taboption('telegram', form.Flag, 'telegram_group_mention_only', _('Require mention in groups'));
+		o.default = o.enabled;
+		o.rmempty = false;
+		o.depends({ managed_config: '1', telegram_enabled: '1' });
+
+		o = s.taboption('telegram', form.Value, 'telegram_proxy', _('API proxy URL'));
+		o.placeholder = 'http://127.0.0.1:7890';
+		o.rmempty = true;
+		o.depends({ managed_config: '1', telegram_enabled: '1' });
+		o.validate = function(sectionId, value) {
+			if (!value)
+				return true;
+			return /^(https?|socks5):\/\/[^\s]+$/.test(value)
+				? true : _('Use an HTTP, HTTPS, or SOCKS5 URL');
+		};
 
 		o = s.taboption('model', form.ListValue, 'provider', _('Provider'));
 		o.value('openai_compatible', _('OpenAI-compatible'));

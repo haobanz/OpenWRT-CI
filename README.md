@@ -28,8 +28,14 @@ Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK，以�
 - ZeroClaw `0.8.4`
 
 LuCI 的 `服务 -> Agent Hub` 提供一套通用设置：运行时、模型提供商、API
-地址、API Key、模型名、温度、最大输出 Token、监听范围和端口。保存应用后，
-配置适配器会生成所选运行时的原生 JSON/TOML，只由 `procd` 启动一个实例。
+地址、API Key、模型名、温度、最大输出 Token、监听范围、端口和 Telegram
+机器人。保存应用后，配置适配器会生成所选运行时的原生 JSON/TOML，只由
+`procd` 启动一个实例。
+
+Telegram 标签页统一管理 Bot Token、允许访问的数字用户 ID、群聊提及规则和
+可选 API 代理。适配器会分别转换为 PicoClaw `channel_list`、NullClaw
+`channels.telegram.accounts` 和 ZeroClaw `channels`/`peer_groups`。启用时必须
+至少配置一个用户 ID，空白名单不会退化为公开机器人。
 
 同一页面带有异步聊天控制台，三种运行时都可以直接对话，模型子进程仍以
 `agenthub` 非 root 账号运行。顶部状态栏实时显示 PID、CPU、RSS 内存占用和
