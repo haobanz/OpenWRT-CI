@@ -1,7 +1,8 @@
-# DAEDE + Agent Hub 自用固件
+# DAEDE + Agent Hub + Cloudflare Tunnel 自用固件
 
-这是一个独立维护的 ImmortalWrt 自用固件项目，重点维护 DAED/dae、OpenClash
-和轻量 AI Agent，不再跟随原 OpenWRT-CI 的通用平台编译逻辑。
+这是一个独立维护的 ImmortalWrt 自用固件项目，重点维护 DAED/dae、OpenClash、
+轻量 AI Agent 和多账号 Cloudflare Tunnel，不再跟随原 OpenWRT-CI 的通用
+平台编译逻辑。
 
 ## 当前目标
 
@@ -11,13 +12,36 @@
 - Device: `link_nn6000-v2`
 - OpenClash、dae、daed、luci-app-daede
 - PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
+- cloudflared 与自维护的多账号 Cloudflare Tunnel LuCI 管理页
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
 
-Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK，以及 Agent Hub
-的五个 APK。其他设备只有在确认具备 BPF、XDP、内核 BTF 支持并加入独立
-配置后才会增加，不会直接套用原仓库的通用配置。
+Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK、Agent Hub 的
+五个 APK，以及 cloudflared、管理后端和 LuCI 三个 Tunnel APK。其他设备只有
+在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会直接套用
+原仓库的通用配置。
+
+## Cloudflare Tunnel
+
+LuCI 的 `服务 -> Cloudflare Tunnel` 提供总览、CF 账号、Tunnel、穿透规则和
+日志五个页面。它可以维护多个 Cloudflare 账号与多个独立 cloudflared 实例，
+直接从 DHCP 租约选择 LAN 设备，再选择协议和端口绑定到指定域名。规则保存时
+同步 Cloudflare 远端 Ingress 与 CNAME；同名 DNS 冲突、外部配置版本变化或 API
+中途失败都会停止操作并尽量恢复原配置。
+
+账号 API Token 不写入 UCI，也不会出现在 cloudflared 或 curl 的进程参数中。
+它们保存在 `/etc/cloudflare-tunnel-manager/secrets/accounts` 的 `0600` 文件中；
+Tunnel Token 独立保存在 `secrets/tunnels`。所需 API Token 权限为：
+
+- Account / Cloudflare Tunnel / Edit
+- Zone / Zone / Read
+- Zone / DNS / Edit
+
+由管理器新建的 Tunnel 可以维护 Ingress 与 DNS。导入已有 Tunnel 默认只读，
+仅由本机运行，防止覆盖 Cloudflare 控制台或 Terraform 管理的规则。DNS 删除也
+只作用于带本管理器注释的记录，不会接管已有同名记录。详细设计与维护说明见
+[`vendor/cloudflare-tunnel-manager/README.md`](vendor/cloudflare-tunnel-manager/README.md)。
 
 ## Agent Hub
 
@@ -65,9 +89,10 @@ agent-hubctl status
 ## 自动构建
 
 [`DAEDE-Build.yml`](.github/workflows/DAEDE-Build.yml) 每 6 小时检查
-`VIKINGYFY/immortalwrt` 的 `main` 分支。检测到上游提交变化后，调用本仓库
-自己的 `Build-NN6000-DAEDE.sh`，构建 NN6000 v2 固件、DAED 依赖包和 Agent
-Hub 的五个 APK，并创建一个新的 GitHub Release。
+`VIKINGYFY/immortalwrt` 的 `main` 分支以及 `immortalwrt/packages` 中
+`net/cloudflared` 的最近提交。检测到任一上游变化，或本仓库的 Tunnel 管理器、
+固件配置和构建脚本发生变化后，会调用自己的 `Build-NN6000-DAEDE.sh`，构建
+NN6000 v2 固件与独立 APK，并创建新的 GitHub Release。
 
 构建失败不会更新提交基线，下一轮会自动重试。也可以在 Actions 中手动
 运行该 workflow，手动运行会强制构建一次。
@@ -97,6 +122,7 @@ HOST_DEPS_DIR=/tmp/openwrt-host-deps/root JOBS=8 \
 
 ## 自维护规则
 
-ImmortalWrt 上游可以自动触发重新编译；daed/dae 使用的 vendored 版本则
-固定在 `vendor/daede/REVISION`，只有经过验证后才更新。这样可以避免上游
-包变化直接破坏当前 NN6000 v2 的 BTF 和内核模块匹配关系。
+ImmortalWrt 和 cloudflared feed 上游可以自动触发重新编译；daed/dae 使用的
+vendored 版本则固定在 `vendor/daede/REVISION`，只有经过验证后才更新。
+Tunnel 管理器固定在 `vendor/cloudflare-tunnel-manager`，cloudflared 核心继续
+使用 ImmortalWrt packages feed，避免复制和滞后维护上游 Go 客户端。

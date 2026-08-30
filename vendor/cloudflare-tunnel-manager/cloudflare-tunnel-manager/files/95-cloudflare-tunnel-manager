@@ -1,0 +1,15 @@
+#!/bin/sh
+
+mkdir -p /etc/cloudflare-tunnel-manager/secrets/accounts \
+	/etc/cloudflare-tunnel-manager/secrets/tunnels \
+	/tmp/cloudflare-tunnel-manager /var/log/cloudflare-tunnel-manager
+chmod 0700 /etc/cloudflare-tunnel-manager \
+	/etc/cloudflare-tunnel-manager/secrets \
+	/etc/cloudflare-tunnel-manager/secrets/accounts \
+	/etc/cloudflare-tunnel-manager/secrets/tunnels \
+	/tmp/cloudflare-tunnel-manager \
+	/var/log/cloudflare-tunnel-manager
+chmod 0600 /etc/config/cloudflare-tunnel-manager
+/etc/init.d/cloudflare-tunnel-manager enable >/dev/null 2>&1 || true
+
+exit 0

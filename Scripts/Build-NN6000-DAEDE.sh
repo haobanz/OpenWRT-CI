@@ -212,6 +212,9 @@ fi
 
 for required_package in \
 	luci-app-openclash \
+	cloudflared \
+	cloudflare-tunnel-manager \
+	luci-app-cloudflare-tunnel-manager \
 	dae \
 	daed \
 	luci-app-daede \

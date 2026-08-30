@@ -1,13 +1,22 @@
 # SPDX-License-Identifier: MIT
 
-name: DAEDE Self Build
+name: NN6000 Self-Maintained Firmware
 
 on:
-  # Check the ImmortalWrt source every six hours.
+  # Check the firmware source and cloudflared feed every six hours.
   schedule:
     - cron: '17 */6 * * *'
-  # Manual runs always force a build.
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/DAEDE-Build.yml'
+      - 'Config/NN6000-DAEDE.txt'
+      - 'Config/GENERAL-NN6000-DAEDE.txt'
+      - 'Scripts/Build-NN6000-DAEDE.sh'
+      - 'Scripts/Packages-NN6000-DAEDE.sh'
+      - 'vendor/cloudflare-tunnel-manager/**'
 
 permissions:
   contents: write
@@ -19,11 +28,12 @@ concurrency:
 
 jobs:
   check:
-    name: Check ImmortalWrt upstream
+    name: Check firmware and cloudflared upstream
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
       upstream_sha: ${{ steps.compare.outputs.upstream_sha }}
+      cloudflared_sha: ${{ steps.compare.outputs.cloudflared_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,32 +41,48 @@ jobs:
       - name: Compare upstream revision
         id: compare
         env:
-          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' }}
+          FORCE_BUILD: ${{ github.event_name != 'schedule' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           upstream_sha="$(git ls-remote https://github.com/VIKINGYFY/immortalwrt.git refs/heads/main | awk 'NR == 1 { print $1 }')"
           [[ -n "$upstream_sha" ]]
+          cloudflared_sha="$(
+            curl -fsSL --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              'https://api.github.com/repos/immortalwrt/packages/commits?sha=master&path=net/cloudflared&per_page=1' \
+              | jq -er '.[0].sha'
+          )"
           known_sha=""
+          known_cloudflared_sha=""
           if [[ -f .github/daede-state/immortalwrt-main.sha ]]; then
             known_sha="$(tr -d '[:space:]' < .github/daede-state/immortalwrt-main.sha)"
           fi
+          if [[ -f .github/daede-state/cloudflared.sha ]]; then
+            known_cloudflared_sha="$(tr -d '[:space:]' < .github/daede-state/cloudflared.sha)"
+          fi
 
           changed=false
-          if [[ "$FORCE_BUILD" == true || "$upstream_sha" != "$known_sha" ]]; then
+          if [[ "$FORCE_BUILD" == true || "$upstream_sha" != "$known_sha" || \
+                "$cloudflared_sha" != "$known_cloudflared_sha" ]]; then
             changed=true
           fi
 
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "cloudflared_sha=$cloudflared_sha" >> "$GITHUB_OUTPUT"
           {
-            echo "### ImmortalWrt upstream check"
+            echo "### Upstream check"
             echo "- ImmortalWrt: `$upstream_sha`"
-            echo "- Last successful build: `${known_sha:-none}`"
+            echo "- Last firmware build: `${known_sha:-none}`"
+            echo "- cloudflared feed: `$cloudflared_sha`"
+            echo "- Last cloudflared build: `${known_cloudflared_sha:-none}`"
             echo "- Build required: `$changed`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build NN6000 v2 firmware and Agent Hub
+    name: Build NN6000 v2 firmware, Agent Hub, and Cloudflare Tunnel
     needs: check
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -84,7 +110,7 @@ jobs:
             immortalwrt-local/staging_dir/tool*
             immortalwrt-local/build_dir/host*
             immortalwrt-local/build_dir/tool*
-          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile', 'vendor/agent-hub/**') }}
+          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ needs.check.outputs.cloudflared_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile', 'vendor/agent-hub/**', 'vendor/cloudflare-tunnel-manager/**') }}
           restore-keys: |
             daede-nn6000-${{ runner.os }}-
 
@@ -139,6 +165,9 @@ jobs:
           [[ -n "$sysupgrade" && -n "$factory" ]]
           [[ -n "$manifest" ]]
           grep -q '^luci-app-openclash ' "$manifest"
+          grep -q '^cloudflared ' "$manifest"
+          grep -q '^cloudflare-tunnel-manager ' "$manifest"
+          grep -q '^luci-app-cloudflare-tunnel-manager ' "$manifest"
           cp -f "$sysupgrade" "$factory" "$upload_dir/"
 
           find immortalwrt-local/bin -type f \( \
@@ -149,6 +178,9 @@ jobs:
             -name 'kmod-sched-bpf-*.apk' -o \
             -name 'kmod-xdp-sockets-diag-*.apk' -o \
             -name 'luci-app-openclash-*.apk' -o \
+            -name 'cloudflared-*.apk' -o \
+            -name 'cloudflare-tunnel-manager-*.apk' -o \
+            -name 'luci-app-cloudflare-tunnel-manager-*.apk' -o \
             -name 'picoclaw-*.apk' -o \
             -name 'nullclaw-*.apk' -o \
             -name 'zeroclaw-*.apk' -o \
@@ -159,6 +191,8 @@ jobs:
           for pattern in 'dae-*.apk' 'daed-*.apk' 'luci-app-daede-*.apk' \
             'vmlinux-btf-*.apk' 'kmod-sched-bpf-*.apk' 'kmod-xdp-sockets-diag-*.apk' \
             'luci-app-openclash-*.apk' \
+            'cloudflared-*.apk' 'cloudflare-tunnel-manager-*.apk' \
+            'luci-app-cloudflare-tunnel-manager-*.apk' \
             'picoclaw-*.apk' 'nullclaw-*.apk' 'zeroclaw-*.apk' 'agent-hub-*.apk' \
             'luci-app-agent-hub-*.apk'; do
             if ! compgen -G "$upload_dir/$pattern" > /dev/null; then
@@ -172,6 +206,8 @@ jobs:
           cp -f build/NN6000-DAEDE.config "$upload_dir/NN6000-DAEDE.config"
           cp -f vendor/daede/REVISION "$upload_dir/DAEDE-REVISION"
           cp -f vendor/agent-hub/REVISION "$upload_dir/AGENT-HUB-REVISION"
+          cp -f vendor/cloudflare-tunnel-manager/REVISION \
+            "$upload_dir/CLOUDFLARE-TUNNEL-MANAGER-REVISION"
 
           (
             cd "$upload_dir"
@@ -190,7 +226,7 @@ jobs:
           fi
           ls -lh "$upload_dir"
 
-      - name: Publish DAEDE and Agent Hub Release
+      - name: Publish self-maintained firmware release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -212,8 +248,12 @@ jobs:
             NullClaw、ZeroClaw。三个 Agent 运行时同时安装，但只启动所选的一个；
             LuCI 提供统一聊天控制台和三运行时通用 Telegram 机器人设置，以及
             默认关闭的可选 Root 系统权限；配置应用后会重启所选运行时，确保渠道
-            和权限立即生效。固件还包含 PicoClaw
-            Launcher 与 ZeroClaw Dashboard。
+            和权限立即生效。固件还包含 PicoClaw Launcher 与 ZeroClaw Dashboard。
+
+            Cloudflare Tunnel 管理器支持多 CF 账号、0600 权限隔离 Token 文件、多
+            cloudflared 实例、LAN DHCP 设备与端口选择、Ingress 和 DNS 原子同步、
+            资源占用及日志。cloudflared 核心来自 ImmortalWrt packages feed，管理
+            后端与 LuCI 界面由本仓库维护。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。
@@ -283,13 +323,16 @@ jobs:
       - name: Update build baseline
         env:
           UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha }}
+          CLOUDFLARED_SHA: ${{ needs.check.outputs.cloudflared_sha }}
         run: |
           set -Eeuo pipefail
           mkdir -p .github/daede-state
           printf '%s\n' "$UPSTREAM_SHA" > .github/daede-state/immortalwrt-main.sha
+          printf '%s\n' "$CLOUDFLARED_SHA" > .github/daede-state/cloudflared.sha
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/daede-state/immortalwrt-main.sha
+          git add .github/daede-state/immortalwrt-main.sha \
+            .github/daede-state/cloudflared.sha
           if git diff --cached --quiet; then
             exit 0
           fi

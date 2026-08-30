@@ -1,0 +1,22 @@
+{
+	"luci-app-cloudflare-tunnel-manager": {
+		"description": "Grant access to Cloudflare Tunnel Manager",
+		"read": {
+			"file": {
+				"/usr/libexec/cloudflare-tunnel-manager snapshot": [ "exec" ],
+				"/usr/libexec/cloudflare-tunnel-manager zones *": [ "exec" ],
+				"/usr/libexec/cloudflare-tunnel-manager remote-tunnels *": [ "exec" ],
+				"/usr/libexec/cloudflare-tunnel-manager logs *": [ "exec" ]
+			},
+			"ubus": {
+				"luci-rpc": [ "getDHCPLeases", "getHostHints" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/tmp/cloudflare-tunnel-manager/request.json": [ "write", "remove" ],
+				"/usr/libexec/cloudflare-tunnel-manager request": [ "exec" ]
+			}
+		}
+	}
+}

@@ -25,6 +25,12 @@ CONFIG_PACKAGE_dae=y
 CONFIG_PACKAGE_daed=y
 CONFIG_PACKAGE_luci-app-daede=y
 
+# Multi-account Cloudflare Tunnel manager. The cloudflared core follows the
+# ImmortalWrt packages feed; the backend and LuCI control plane are vendored.
+CONFIG_PACKAGE_cloudflared=y
+CONFIG_PACKAGE_cloudflare-tunnel-manager=y
+CONFIG_PACKAGE_luci-app-cloudflare-tunnel-manager=y
+
 # Lightweight AI agent runtimes with a mutually exclusive manager
 CONFIG_PACKAGE_picoclaw=y
 CONFIG_PACKAGE_nullclaw=y

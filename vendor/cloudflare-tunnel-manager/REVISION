@@ -1,0 +1,4 @@
+cloudflare-tunnel-manager: 1.0.0
+luci-app-cloudflare-tunnel-manager: 1.0.0
+cloudflared: ImmortalWrt packages feed (not vendored)
+Cloudflare API contract reviewed: 2026-08-31

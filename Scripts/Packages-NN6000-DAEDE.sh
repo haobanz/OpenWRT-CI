@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 DAEDE_DIR="$GITHUB_WORKSPACE/vendor/daede"
 AGENT_HUB_DIR="$GITHUB_WORKSPACE/vendor/agent-hub"
+CLOUDFLARE_MANAGER_DIR="$GITHUB_WORKSPACE/vendor/cloudflare-tunnel-manager"
 
 # Remove same-name feed entries so the vendored versions are unambiguous.
 for feed_package in \
@@ -35,6 +36,15 @@ for package_name in picoclaw nullclaw zeroclaw agent-hub luci-app-agent-hub; do
 	fi
 	rm -rf "./$package_name"
 	cp -a "$AGENT_HUB_DIR/$package_name" "./$package_name"
+done
+
+for package_name in cloudflare-tunnel-manager luci-app-cloudflare-tunnel-manager; do
+	if [[ ! -d "$CLOUDFLARE_MANAGER_DIR/$package_name" ]]; then
+		echo "Missing vendored package: $CLOUDFLARE_MANAGER_DIR/$package_name" >&2
+		exit 1
+	fi
+	rm -rf "./$package_name"
+	cp -a "$CLOUDFLARE_MANAGER_DIR/$package_name" "./$package_name"
 done
 
 # OpenClash is kept on the same dev branch used by the upstream CI project.
