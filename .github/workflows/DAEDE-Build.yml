@@ -17,6 +17,7 @@ on:
       - 'Scripts/Build-NN6000-DAEDE.sh'
       - 'Scripts/Packages-NN6000-DAEDE.sh'
       - 'vendor/cloudflare-tunnel-manager/**'
+      - 'vendor/game-accelerators/**'
 
 permissions:
   contents: write
@@ -82,7 +83,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build NN6000 v2 firmware, Agent Hub, and Cloudflare Tunnel
+    name: Build NN6000 v2 firmware and integrated services
     needs: check
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -110,7 +111,7 @@ jobs:
             immortalwrt-local/staging_dir/tool*
             immortalwrt-local/build_dir/host*
             immortalwrt-local/build_dir/tool*
-          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ needs.check.outputs.cloudflared_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile', 'vendor/agent-hub/**', 'vendor/cloudflare-tunnel-manager/**') }}
+          key: daede-nn6000-${{ runner.os }}-${{ needs.check.outputs.upstream_sha }}-${{ needs.check.outputs.cloudflared_sha }}-${{ hashFiles('Config/NN6000-DAEDE.txt', 'Config/GENERAL-NN6000-DAEDE.txt', 'vendor/daede/REVISION', 'vendor/daede/vmlinux-btf/Makefile', 'vendor/agent-hub/**', 'vendor/cloudflare-tunnel-manager/**', 'vendor/game-accelerators/**') }}
           restore-keys: |
             daede-nn6000-${{ runner.os }}-
 
@@ -168,6 +169,10 @@ jobs:
           grep -q '^cloudflared ' "$manifest"
           grep -q '^cloudflare-tunnel-manager ' "$manifest"
           grep -q '^luci-app-cloudflare-tunnel-manager ' "$manifest"
+          grep -q '^luci-app-uugamebooster ' "$manifest"
+          grep -q '^leigod-acc ' "$manifest"
+          grep -q '^luci-app-leigod-acc ' "$manifest"
+          grep -q '^luci-i18n-leigod-acc-zh-cn ' "$manifest"
           cp -f "$sysupgrade" "$factory" "$upload_dir/"
 
           find immortalwrt-local/bin -type f \( \
@@ -181,6 +186,10 @@ jobs:
             -name 'cloudflared-*.apk' -o \
             -name 'cloudflare-tunnel-manager-*.apk' -o \
             -name 'luci-app-cloudflare-tunnel-manager-*.apk' -o \
+            -name 'luci-app-uugamebooster-*.apk' -o \
+            -name 'leigod-acc-*.apk' -o \
+            -name 'luci-app-leigod-acc-*.apk' -o \
+            -name 'luci-i18n-leigod-acc-zh-cn-*.apk' -o \
             -name 'picoclaw-*.apk' -o \
             -name 'nullclaw-*.apk' -o \
             -name 'zeroclaw-*.apk' -o \
@@ -193,6 +202,8 @@ jobs:
             'luci-app-openclash-*.apk' \
             'cloudflared-*.apk' 'cloudflare-tunnel-manager-*.apk' \
             'luci-app-cloudflare-tunnel-manager-*.apk' \
+            'luci-app-uugamebooster-*.apk' 'leigod-acc-*.apk' \
+            'luci-app-leigod-acc-*.apk' 'luci-i18n-leigod-acc-zh-cn-*.apk' \
             'picoclaw-*.apk' 'nullclaw-*.apk' 'zeroclaw-*.apk' 'agent-hub-*.apk' \
             'luci-app-agent-hub-*.apk'; do
             if ! compgen -G "$upload_dir/$pattern" > /dev/null; then
@@ -208,6 +219,8 @@ jobs:
           cp -f vendor/agent-hub/REVISION "$upload_dir/AGENT-HUB-REVISION"
           cp -f vendor/cloudflare-tunnel-manager/REVISION \
             "$upload_dir/CLOUDFLARE-TUNNEL-MANAGER-REVISION"
+          cp -f vendor/game-accelerators/REVISION \
+            "$upload_dir/GAME-ACCELERATORS-REVISION"
 
           (
             cd "$upload_dir"
@@ -254,6 +267,12 @@ jobs:
             cloudflared 实例、LAN DHCP 设备与端口选择、Ingress 和 DNS 原子同步、
             资源占用及日志。cloudflared 核心来自 ImmortalWrt packages feed，管理
             后端与 LuCI 界面由本仓库维护。
+
+            网易 UU 与雷神加速器均已集成，默认关闭且互斥运行。UU 核心在启动时
+            通过厂商 HTTPS 接口获取；雷神仅启用 firewall4 兼容的 TUN 模式，核心
+            首次启动下载并校验固定 SHA-256。固件使用 nftables 版 UPnP，并同时
+            发布四个自维护插件 APK（含雷神中文语言包）。使用前应让
+            OpenClash/dae 绕过加速设备。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。

@@ -1,0 +1,22 @@
+
+config system 'base'
+	option url 'https://opapi.nn.com/speed/router/plug/check'
+	option heart 'https://opapi.nn.com/speed/router/heartbeat'
+	option base_url 'https://opapi.nn.com/speed'
+	option enabled '0'
+	option mode 'tun'
+	option tun '1'
+	option auto_upnp '1'
+	option neigh 'br-lan'
+
+config bind 'bind'
+
+config hardware 'device'
+
+config acceleration 'Phone'
+
+config acceleration 'PC'
+
+config acceleration 'Game'
+
+config acceleration 'Unknown'

@@ -1,8 +1,8 @@
-# DAEDE + Agent Hub + Cloudflare Tunnel 自用固件
+# DAEDE + Agent Hub + Cloudflare Tunnel + 游戏加速自用固件
 
 这是一个独立维护的 ImmortalWrt 自用固件项目，重点维护 DAED/dae、OpenClash、
-轻量 AI Agent 和多账号 Cloudflare Tunnel，不再跟随原 OpenWRT-CI 的通用
-平台编译逻辑。
+轻量 AI Agent、多账号 Cloudflare Tunnel，以及网易 UU/雷神路由器
+加速插件，不再跟随原 OpenWRT-CI 的通用平台编译逻辑。
 
 ## 当前目标
 
@@ -13,12 +13,14 @@
 - OpenClash、dae、daed、luci-app-daede
 - PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
 - cloudflared 与自维护的多账号 Cloudflare Tunnel LuCI 管理页
+- 网易 UU 和雷神游戏加速器 LuCI 管理页
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
 
 Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK、Agent Hub 的
-五个 APK，以及 cloudflared、管理后端和 LuCI 三个 Tunnel APK。其他设备只有
+五个 APK、Cloudflare Tunnel 的三个 APK，以及两套游戏加速器的
+四个 APK（含雷神中文语言包）。其他设备只有
 在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会直接套用
 原仓库的通用配置。
 
@@ -42,6 +44,25 @@ Tunnel Token 独立保存在 `secrets/tunnels`。所需 API Token 权限为：
 仅由本机运行，防止覆盖 Cloudflare 控制台或 Terraform 管理的规则。DNS 删除也
 只作用于带本管理器注释的记录，不会接管已有同名记录。详细设计与维护说明见
 [`vendor/cloudflare-tunnel-manager/README.md`](vendor/cloudflare-tunnel-manager/README.md)。
+
+## 游戏加速
+
+固件同时安装网易 UU 和雷神的管理插件，但两者默认都不接管流量，
+并且启动脚本禁止它们同时运行。LuCI 入口位于：
+
+- `服务 -> 网易UU游戏加速器`
+- `服务 -> Leigod Acc`
+
+UU 核心每次需要时从厂商 HTTPS API 获取，根据 API 返回的 MD5 校验后
+放入 `/var/tmp/uu`。雷神在第一次启动时下载 ARM64 核心；厂商仅提供
+HTTP 端点，因此自维护包对已审核的文件强制固定 SHA-256，校验失败不会
+运行。固件只开放适配 firewall4/nftables 的雷神 TUN 模式，UPnP 使用
+`miniupnpd-nftables` 且保留安全模式。
+
+两个厂商核心都不会进入 Git 或固件镜像。启用前需先在 OpenClash/dae 中将
+要加速的 LAN 设备设为直连，否则可能被两套透明代理重复处理。实现与安全
+边界见
+[`vendor/game-accelerators/README.md`](vendor/game-accelerators/README.md)。
 
 ## Agent Hub
 
@@ -91,7 +112,8 @@ agent-hubctl status
 [`DAEDE-Build.yml`](.github/workflows/DAEDE-Build.yml) 每 6 小时检查
 `VIKINGYFY/immortalwrt` 的 `main` 分支以及 `immortalwrt/packages` 中
 `net/cloudflared` 的最近提交。检测到任一上游变化，或本仓库的 Tunnel 管理器、
-固件配置和构建脚本发生变化后，会调用自己的 `Build-NN6000-DAEDE.sh`，构建
+游戏加速适配层、固件配置和构建脚本发生变化后，会调用自己的
+`Build-NN6000-DAEDE.sh`，构建
 NN6000 v2 固件与独立 APK，并创建新的 GitHub Release。
 
 构建失败不会更新提交基线，下一轮会自动重试。也可以在 Actions 中手动
@@ -126,3 +148,5 @@ ImmortalWrt 和 cloudflared feed 上游可以自动触发重新编译；daed/dae
 vendored 版本则固定在 `vendor/daede/REVISION`，只有经过验证后才更新。
 Tunnel 管理器固定在 `vendor/cloudflare-tunnel-manager`，cloudflared 核心继续
 使用 ImmortalWrt packages feed，避免复制和滞后维护上游 Go 客户端。
+网易 UU/雷神适配层固定在 `vendor/game-accelerators`，上游提交和雷神
+核心摘要记录在该目录的 `REVISION`，升级摘要前需重新审核和实机验证。

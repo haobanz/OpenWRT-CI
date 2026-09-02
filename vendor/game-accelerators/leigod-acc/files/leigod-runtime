@@ -1,0 +1,100 @@
+#!/bin/sh
+
+BASE_URL='http://119.3.40.126/router_plugin'
+RUNTIME_DIR='/usr/sbin/leigod'
+
+log_msg() {
+	logger -t leigod-runtime "$*"
+	echo "$*"
+}
+
+get_arch() {
+	case "$(uname -m)" in
+		aarch64|arm64) echo arm64 ;;
+		x86_64) echo amd64 ;;
+		armv7*|armv8l) echo arm ;;
+		mipsel|mipsle|mips) echo mipsle ;;
+		*) return 1 ;;
+	esac
+}
+
+get_sha256() {
+	case "$1" in
+		arm64) echo '316a604645f4216276dc5642d5f638a005b342771fb436a3c63826d85c5b5c1b' ;;
+		amd64) echo 'c26e2cde79ef21991834a94232520d1e5ac2df88a6382cb436a61865a8d9c15e' ;;
+		arm) echo 'c904bb3f41910d50ae6e8abc1e2a0b73eed6d74fb5c3b55274b82e9d4662a426' ;;
+		mipsle) echo 'ac35cf6e19fc5028ac1da9921456726a14e0726339e89fe3e14c01a713140e57' ;;
+		*) return 1 ;;
+	esac
+}
+
+verify_file() {
+	local file expected actual
+	file="$1"
+	expected="$2"
+	[ -f "$file" ] || return 1
+	actual="$(sha256sum "$file" | awk '{print $1}')"
+	[ "$actual" = "$expected" ]
+}
+
+download_runtime() {
+	local arch expected target temporary
+	arch="$1"
+	expected="$(get_sha256 "$arch")" || return 1
+	target="$RUNTIME_DIR/acc-gw.linux.$arch"
+	temporary="/tmp/leigod-runtime.$$.download"
+
+	mkdir -p "$RUNTIME_DIR"
+	rm -f "$temporary"
+	log_msg "Downloading the Leigod $arch router runtime"
+	if ! curl --fail --location --silent --show-error --retry 2 \
+		--connect-timeout 10 --max-time 180 \
+		-o "$temporary" "$BASE_URL/acc-gw.linux.$arch"; then
+		rm -f "$temporary"
+		log_msg "Unable to download the Leigod router runtime"
+		return 1
+	fi
+	if ! verify_file "$temporary" "$expected"; then
+		rm -f "$temporary"
+		log_msg "Leigod runtime SHA-256 verification failed"
+		return 1
+	fi
+
+	chmod 0755 "$temporary"
+	mv -f "$temporary" "$target"
+	log_msg "Installed the verified Leigod router runtime"
+}
+
+main() {
+	local action arch expected target
+	action="${1:-ensure}"
+	arch="$(get_arch)" || {
+		log_msg "Unsupported CPU architecture: $(uname -m)"
+		return 1
+	}
+	expected="$(get_sha256 "$arch")" || return 1
+	target="$RUNTIME_DIR/acc-gw.linux.$arch"
+
+	case "$action" in
+		path)
+			echo "$target"
+			;;
+		verify)
+			verify_file "$target" "$expected"
+			;;
+		ensure)
+			if ! verify_file "$target" "$expected"; then
+				download_runtime "$arch" || return 1
+			fi
+			;;
+		refresh)
+			download_runtime "$arch"
+			;;
+		*)
+			echo "Usage: $0 {ensure|refresh|verify|path}" >&2
+			return 2
+			;;
+	esac
+}
+
+main "$@"

@@ -148,15 +148,21 @@ fi
 rm -rf \
 	feeds/luci/applications/luci-app-dae \
 	feeds/luci/applications/luci-app-daed \
+	feeds/luci/applications/luci-app-uugamebooster \
+	feeds/luci/applications/luci-app-leigod-acc \
 	feeds/luci/applications/luci-app-openclash \
 	feeds/packages/net/dae \
 	feeds/packages/net/daed \
+	feeds/packages/net/leigod-acc \
 	feeds/packages/luci-app-openclash \
 	package/feeds/luci/luci-app-dae \
 	package/feeds/luci/luci-app-daed \
+	package/feeds/luci/luci-app-uugamebooster \
+	package/feeds/luci/luci-app-leigod-acc \
 	package/feeds/luci/luci-app-openclash \
 	package/feeds/packages/dae \
 	package/feeds/packages/daed \
+	package/feeds/packages/leigod-acc \
 	package/feeds/packages/luci-app-openclash
 rm -f feeds/luci.tmp/info/.packageinfo-applications_luci-app-openclash
 
@@ -215,6 +221,10 @@ for required_package in \
 	cloudflared \
 	cloudflare-tunnel-manager \
 	luci-app-cloudflare-tunnel-manager \
+	luci-app-uugamebooster \
+	leigod-acc \
+	luci-app-leigod-acc \
+	luci-i18n-leigod-acc-zh-cn \
 	dae \
 	daed \
 	luci-app-daede \

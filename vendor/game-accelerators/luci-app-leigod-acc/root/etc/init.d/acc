@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=98
+STOP=15
+
+RUNTIME_HELPER='/usr/sbin/leigod/leigod-runtime'
+
+log_msg() {
+	logger -t leigod-acc "$*"
+	echo "$*"
+}
+
+get_arch() {
+	case "$(uname -m)" in
+		aarch64|arm64) echo arm64 ;;
+		x86_64) echo amd64 ;;
+		armv7*|armv8l) echo arm ;;
+		mipsel|mipsle|mips) echo mipsle ;;
+		*) return 1 ;;
+	esac
+}
+
+ensure_upnp() {
+	local auto_upnp upnp_enabled
+	auto_upnp="$(uci -q get accelerator.base.auto_upnp)"
+	upnp_enabled="$(uci -q get upnpd.config.enabled)"
+	[ "$upnp_enabled" = 1 ] && return 0
+	if [ "$auto_upnp" != 1 ]; then
+		log_msg "UPnP is disabled; enable it before binding with the Leigod App"
+		return 1
+	fi
+	uci -q set upnpd.config.enabled='1'
+	uci -q commit upnpd
+	/etc/init.d/miniupnpd enable >/dev/null 2>&1 || true
+	/etc/init.d/miniupnpd restart >/dev/null 2>&1 || {
+		log_msg "Unable to start UPnP"
+		return 1
+	}
+	log_msg "Enabled UPnP for Leigod App discovery"
+}
+
+start_service() {
+	local enabled mode arch binary
+	enabled="$(uci -q get accelerator.base.enabled)"
+	[ "$enabled" = 1 ] || return 0
+
+	if /etc/init.d/uuplugin running >/dev/null 2>&1 || pidof uuplugin >/dev/null 2>&1; then
+		log_msg "Refusing to start because NetEase UU is already running"
+		return 1
+	fi
+	mode="$(uci -q get accelerator.base.mode)"
+	[ -n "$mode" ] || mode='tun'
+	if [ "$mode" != tun ]; then
+		log_msg "Only TUN mode is supported on this firewall4 build"
+		return 1
+	fi
+	[ -x "$RUNTIME_HELPER" ] || {
+		log_msg "Leigod runtime helper is missing"
+		return 1
+	}
+	"$RUNTIME_HELPER" ensure || return 1
+	ensure_upnp || return 1
+	arch="$(get_arch)" || return 1
+	binary="/usr/sbin/leigod/acc-gw.linux.$arch"
+	[ -x "$binary" ] || return 1
+
+	if pidof clash mihomo dae daed >/dev/null 2>&1; then
+		log_msg "A proxy service is also running; use per-device bypass rules if traffic conflicts"
+	fi
+	log_msg "Starting Leigod Accelerator in TUN mode"
+	procd_open_instance leigod
+	procd_set_param command "$binary" --mode tun
+	procd_set_param respawn 3600 5 5
+	procd_set_param term_timeout 15
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger accelerator
+}

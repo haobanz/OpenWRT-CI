@@ -1,0 +1,34 @@
+<fieldset class="cbi-section">
+	<legend><%:Service status%></legend>
+	<div id="acc_service_state"><em><%:Collecting data...%></em></div>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend><%:Acc Catalog State%></legend>
+	<table class="cbi-section-table" id="acc_catalog_state_table">
+		<tr class="cbi-section-table-title">
+			<th class="cbi-section-table-cell"><%:Acc_Catalog%></th>
+			<th class="cbi-section-table-cell"><%:Acc_Catalog_Status%></th>
+		</tr>
+	</table>
+</fieldset>
+
+<script type="text/javascript">//<![CDATA[
+XHR.poll(5, '<%=url("admin/services/acc/status")%>', null, function(x, st) {
+	var service = document.getElementById('acc_service_state');
+	var table = document.getElementById('acc_catalog_state_table');
+	if (!st)
+		return;
+	if (service)
+		service.textContent = st.service || '<%:Unknown%>';
+	if (table) {
+		while (table.rows.length > 1)
+			table.deleteRow(1);
+		Object.keys(st.state || {}).forEach(function(name) {
+			var row = table.insertRow(-1);
+			row.insertCell(-1).textContent = name;
+			row.insertCell(-1).textContent = st.state[name];
+		});
+	}
+});
+//]]></script>

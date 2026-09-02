@@ -6,6 +6,7 @@ set -Eeuo pipefail
 DAEDE_DIR="$GITHUB_WORKSPACE/vendor/daede"
 AGENT_HUB_DIR="$GITHUB_WORKSPACE/vendor/agent-hub"
 CLOUDFLARE_MANAGER_DIR="$GITHUB_WORKSPACE/vendor/cloudflare-tunnel-manager"
+GAME_ACCEL_DIR="$GITHUB_WORKSPACE/vendor/game-accelerators"
 
 # Remove same-name feed entries so the vendored versions are unambiguous.
 for feed_package in \
@@ -45,6 +46,17 @@ for package_name in cloudflare-tunnel-manager luci-app-cloudflare-tunnel-manager
 	fi
 	rm -rf "./$package_name"
 	cp -a "$CLOUDFLARE_MANAGER_DIR/$package_name" "./$package_name"
+done
+
+# Keep the integration wrappers in-tree while leaving proprietary vendor
+# executables out of the repository and firmware image.
+for package_name in leigod-acc luci-app-leigod-acc luci-app-uugamebooster; do
+	if [[ ! -d "$GAME_ACCEL_DIR/$package_name" ]]; then
+		echo "Missing vendored package: $GAME_ACCEL_DIR/$package_name" >&2
+		exit 1
+	fi
+	rm -rf "./$package_name"
+	cp -a "$GAME_ACCEL_DIR/$package_name" "./$package_name"
 done
 
 # OpenClash is kept on the same dev branch used by the upstream CI project.

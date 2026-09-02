@@ -1,0 +1,6 @@
+<fieldset class="cbi-section">
+	<legend><%:Usage notes%></legend>
+	<p>此插件需要配合雷神加速器手机 App 使用。首次启用时会从雷神官方路由器插件地址下载 ARM64 核心，并校验固定 SHA-256 后运行。</p>
+	<p>当前固件固定使用 TUN 模式适配 firewall4。UU 与雷神不能同时启动；如果 OpenClash 或 DAED 同时运行，请将被加速设备加入其绕过列表，避免重复接管。</p>
+	<p>App 发现路由器依赖 UPnP。启用“自动开启 UPnP”后，仅启用 OpenWrt 自带的 nftables 版本 miniupnpd，并保留 secure mode。</p>
+</fieldset>

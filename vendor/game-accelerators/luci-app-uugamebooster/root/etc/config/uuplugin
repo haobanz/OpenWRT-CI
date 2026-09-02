@@ -1,0 +1,4 @@
+config uuplugin
+	option enabled '0'
+	option model 'NN6000-v2'
+	option addfw '0'

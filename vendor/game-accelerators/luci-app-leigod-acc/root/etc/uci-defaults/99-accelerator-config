@@ -1,0 +1,29 @@
+#!/bin/sh
+
+uci -q get accelerator.base.url >/dev/null || \
+	uci -q set accelerator.base.url='https://opapi.nn.com/speed/router/plug/check'
+uci -q get accelerator.base.heart >/dev/null || \
+	uci -q set accelerator.base.heart='https://opapi.nn.com/speed/router/heartbeat'
+uci -q get accelerator.base.base_url >/dev/null || \
+	uci -q set accelerator.base.base_url='https://opapi.nn.com/speed'
+uci -q get accelerator.base.enabled >/dev/null || \
+	uci -q set accelerator.base.enabled='0'
+uci -q set accelerator.base.mode='tun'
+uci -q set accelerator.base.tun='1'
+uci -q get accelerator.base.auto_upnp >/dev/null || \
+	uci -q set accelerator.base.auto_upnp='1'
+uci -q get accelerator.base.neigh >/dev/null || \
+	uci -q set accelerator.base.neigh='br-lan'
+uci -q commit accelerator
+
+uci -q batch <<-'EOF' >/dev/null
+	delete ucitrack.@accelerator[-1]
+	add ucitrack accelerator
+	set ucitrack.@accelerator[-1].init='acc'
+	commit ucitrack
+EOF
+
+chmod 0755 /etc/init.d/acc
+/etc/init.d/acc enable >/dev/null 2>&1 || true
+rm -rf /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache
+exit 0
