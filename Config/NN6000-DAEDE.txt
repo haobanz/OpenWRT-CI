@@ -37,6 +37,9 @@ CONFIG_PACKAGE_luci-app-uugamebooster=y
 CONFIG_PACKAGE_leigod-acc=y
 CONFIG_PACKAGE_luci-app-leigod-acc=y
 CONFIG_PACKAGE_luci-i18n-leigod-acc-zh-cn=y
+# Clean-room biubiu client. Build the APK for development without installing
+# the login-only milestone into the firmware image.
+CONFIG_PACKAGE_biubiu-acc=m
 CONFIG_PACKAGE_luci-app-upnp=y
 CONFIG_PACKAGE_miniupnpd-nftables=y
 CONFIG_PACKAGE_iptables-nft=y

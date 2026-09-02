@@ -1,8 +1,9 @@
 # DAEDE + Agent Hub + Cloudflare Tunnel + 游戏加速自用固件
 
 这是一个独立维护的 ImmortalWrt 自用固件项目，重点维护 DAED/dae、OpenClash、
-轻量 AI Agent、多账号 Cloudflare Tunnel，以及网易 UU/雷神路由器
-加速插件，不再跟随原 OpenWRT-CI 的通用平台编译逻辑。
+轻量 AI Agent、多账号 Cloudflare Tunnel、网易 UU/雷神路由器加速插件，
+以及独立开发的 biubiu OpenWrt 客户端，不再跟随原 OpenWRT-CI 的通用平台
+编译逻辑。
 
 ## 当前目标
 
@@ -14,13 +15,14 @@
 - PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
 - cloudflared 与自维护的多账号 Cloudflare Tunnel LuCI 管理页
 - 网易 UU 和雷神游戏加速器 LuCI 管理页
+- 实验性的 `biubiu-acc` 独立 APK（二维码已验证，短信/密码流程待账号授权）
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
 
 Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK、Agent Hub 的
-五个 APK、Cloudflare Tunnel 的三个 APK，以及两套游戏加速器的
-四个 APK（含雷神中文语言包）。其他设备只有
+五个 APK、Cloudflare Tunnel 的三个 APK、两套现有游戏加速器的四个 APK
+（含雷神中文语言包），以及实验性的 `biubiu-acc` APK。其他设备只有
 在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会直接套用
 原仓库的通用配置。
 
@@ -63,6 +65,12 @@ HTTP 端点，因此自维护包对已审核的文件强制固定 SHA-256，校�
 要加速的 LAN 设备设为直连，否则可能被两套透明代理重复处理。实现与安全
 边界见
 [`vendor/game-accelerators/README.md`](vendor/game-accelerators/README.md)。
+
+`biubiu-acc` 采用 clean-room 方式独立实现，只使用用户本人授权的账号会话，
+不分发厂商二进制，也不绕过会员、设备或区域校验。当前里程碑已打通二维码，
+并在路由器实机验证了手机短信验证码及隐藏密码登录接口；真实会话仍需账号本人
+完成一次授权。CI 只构建独立 APK，数据通道、指定 LAN 设备路由和 LuCI 管理页
+验证完成前不会预装进固件或接管流量。
 
 ## Agent Hub
 
@@ -130,17 +138,17 @@ NN6000 v2 固件与独立 APK，并创建新的 GitHub Release。
 
 源码和构建目录使用纯 ASCII 路径：
 
-`/home/moran/DEV/Custom_OpenClash_Rules`
+`/home/moran/DEV/OpenWRT-CI`
 
 ```sh
-cd /home/moran/DEV/Custom_OpenClash_Rules/OpenWRT-CI-local
+cd /home/moran/DEV/OpenWRT-CI
 HOST_DEPS_DIR=/tmp/openwrt-host-deps/root JOBS=8 \
   bash Scripts/Build-NN6000-DAEDE.sh
 ```
 
 生成物位于：
 
-`immortalwrt-local/bin/targets/qualcommax/ipq60xx`
+`/home/moran/DEV/OpenWRT-CI/immortalwrt-local/bin/targets/qualcommax/ipq60xx`
 
 ## 自维护规则
 
@@ -148,5 +156,6 @@ ImmortalWrt 和 cloudflared feed 上游可以自动触发重新编译；daed/dae
 vendored 版本则固定在 `vendor/daede/REVISION`，只有经过验证后才更新。
 Tunnel 管理器固定在 `vendor/cloudflare-tunnel-manager`，cloudflared 核心继续
 使用 ImmortalWrt packages feed，避免复制和滞后维护上游 Go 客户端。
-网易 UU/雷神适配层固定在 `vendor/game-accelerators`，上游提交和雷神
-核心摘要记录在该目录的 `REVISION`，升级摘要前需重新审核和实机验证。
+网易 UU/雷神适配层与 biubiu 独立实现固定在 `vendor/game-accelerators`，
+上游提交、雷神核心摘要和 biubiu 已验证里程碑记录在该目录的 `REVISION`；
+升级或推进数据通道前需重新审核和实机验证。

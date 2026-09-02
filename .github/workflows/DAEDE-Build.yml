@@ -18,6 +18,7 @@ on:
       - 'Scripts/Packages-NN6000-DAEDE.sh'
       - 'vendor/cloudflare-tunnel-manager/**'
       - 'vendor/game-accelerators/**'
+      - 'tools/biubiu-lab/**'
 
 permissions:
   contents: write
@@ -190,6 +191,7 @@ jobs:
             -name 'leigod-acc-*.apk' -o \
             -name 'luci-app-leigod-acc-*.apk' -o \
             -name 'luci-i18n-leigod-acc-zh-cn-*.apk' -o \
+            -name 'biubiu-acc-*.apk' -o \
             -name 'picoclaw-*.apk' -o \
             -name 'nullclaw-*.apk' -o \
             -name 'zeroclaw-*.apk' -o \
@@ -204,6 +206,7 @@ jobs:
             'luci-app-cloudflare-tunnel-manager-*.apk' \
             'luci-app-uugamebooster-*.apk' 'leigod-acc-*.apk' \
             'luci-app-leigod-acc-*.apk' 'luci-i18n-leigod-acc-zh-cn-*.apk' \
+            'biubiu-acc-*.apk' \
             'picoclaw-*.apk' 'nullclaw-*.apk' 'zeroclaw-*.apk' 'agent-hub-*.apk' \
             'luci-app-agent-hub-*.apk'; do
             if ! compgen -G "$upload_dir/$pattern" > /dev/null; then
@@ -273,6 +276,11 @@ jobs:
             首次启动下载并校验固定 SHA-256。固件使用 nftables 版 UPnP，并同时
             发布四个自维护插件 APK（含雷神中文语言包）。使用前应让
             OpenClash/dae 绕过加速设备。
+
+            Release 另附实验性的 biubiu-acc APK。它是本仓库的独立实现，当前
+            已完成二维码协议，并实现短信验证码和隐藏输入密码登录；手机登录的
+            真实会话仍需账号本人授权。数据通道与指定 LAN 设备路由仍在验证，
+            因此暂不预装进固件，也不会接管流量。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。

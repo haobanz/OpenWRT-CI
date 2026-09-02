@@ -1,8 +1,9 @@
 # Game accelerator integrations
 
-This directory contains self-maintained OpenWrt wrappers for NetEase UU and
-Leigod game accelerators. Both services are installed but disabled by default,
-and the init scripts prevent them from running at the same time.
+This directory contains self-maintained OpenWrt integrations for NetEase UU,
+Leigod, and the clean-room biubiu client. UU and Leigod are installed but
+disabled by default, and their init scripts prevent them from running at the
+same time.
 
 ## NetEase UU
 
@@ -24,8 +25,22 @@ and the init scripts prevent them from running at the same time.
 - `miniupnpd-nftables` provides UPnP. Automatic activation is optional and
   keeps secure mode enabled.
 
+## biubiu (experimental)
+
+- `biubiu-acc` is an independent implementation; it contains no vendor binary,
+  private key, or embedded account credential.
+- Version 0.2.0 completes the QR handshake and implements phone SMS and hidden
+  password login. The phone endpoints pass router-side protocol validation;
+  a successful account exchange still requires the owner's one-time input.
+- CI builds it as a standalone APK, but it is not installed in the firmware
+  until account refresh, game profile, node selection, and transport steering
+  have all passed router tests.
+- Protocol facts, open questions, and the clean-room boundary are documented
+  in `biubiu-acc/docs/protocol.md`.
+
 The wrappers warn when OpenClash, Mihomo, dae, or daed is running because game
 traffic may otherwise be intercepted twice. Configure the proxy to bypass the
 accelerated client before enabling either service.
 
-Upstream revisions and the reviewed Leigod digest are recorded in `REVISION`.
+Upstream revisions, the reviewed Leigod digest, and biubiu implementation
+milestones are recorded in `REVISION`.
