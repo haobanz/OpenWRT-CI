@@ -9,4 +9,6 @@ leigod_arm64_sha256=316a604645f4216276dc5642d5f638a005b342771fb436a3c63826d85c5b
 biubiu_cleanroom_version=0.2.0
 biubiu_qr_login_verified=2026-09-03
 biubiu_phone_login_endpoints_verified=2026-09-03
+biubiu_sms_login_verified=2026-09-03
+biubiu_session_refresh_verified=2026-09-03
 reviewed=2026-09-03

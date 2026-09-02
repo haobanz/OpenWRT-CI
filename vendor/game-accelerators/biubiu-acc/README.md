@@ -16,12 +16,13 @@ envelope and three user-authorized login methods:
 - phone SMS code request and SMS code exchange;
 - TLS certificate and hostname verification enabled by default.
 
-The QR exchange was verified against the production service on 2026-09-03.
-SMS and password endpoints were verified from the router with deliberately
-invalid credentials; a successful phone exchange remains pending account-owner
-input. Transport acceleration is not implemented in this milestone, so the
-package is built as an installable test artifact and is not installed in the
-firmware image yet.
+The QR exchange, a user-authorized SMS exchange, and session refresh were
+verified against the production service on 2026-09-03. Password endpoint
+validation used deliberately invalid credentials; no password was retained.
+The reference lab tool persists and refreshes a session atomically without
+printing its credentials. Transport acceleration is not implemented in this
+milestone, so the package is built as an installable test artifact and is not
+installed in the firmware image yet.
 
 ## Usage
 

@@ -30,5 +30,21 @@ python3 tools/biubiu-lab/biubiu_login_probe.py --authorize
 ```
 
 Successful SMS, password, or QR login writes a mode `0600` session file to
-`/tmp/biubiu-session.json`. The file contains live account material and must
-never be committed or attached to a bug report.
+`/tmp/biubiu-session.json`. For a durable login, select a private state path
+outside the repository and keep its parent directory mode `0700`:
+
+```sh
+python3 tools/biubiu-lab/biubiu_login_probe.py \
+  --session-file "$HOME/.local/state/biubiu-lab/session.json" \
+  --session-status
+python3 tools/biubiu-lab/biubiu_login_probe.py \
+  --session-file "$HOME/.local/state/biubiu-lab/session.json" \
+  --refresh-session
+```
+
+`--session-status` reports only booleans, a Cookie count, and the login method.
+It never prints the device ID, session ID, refresh token, or Cookie values.
+`--refresh-session` reads both credentials from the private file and replaces
+it atomically only after the service returns a valid new session. The file
+contains live account material and must never be committed or attached to a
+bug report.

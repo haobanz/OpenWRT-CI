@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import string
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -126,10 +127,24 @@ def request(endpoint: str, payload: dict) -> dict:
 
 
 def atomic_private_write(path: Path, data: bytes) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_bytes(data)
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
 
 
 def resolve_device_id(explicit: str | None, path: Path) -> str:
@@ -154,6 +169,45 @@ def store_session(session_file: Path, device_id: str, method: str, result: dict)
             indent=2,
         ).encode(),
     )
+
+
+def load_session(session_file: Path) -> tuple[dict, str, dict]:
+    record = json.loads(session_file.read_text())
+    device_id = str(uuid.UUID(record["local"]["deviceId"]))
+    login = record.get("login")
+    if not isinstance(login, dict):
+        raise ValueError("session file has no login response")
+    session_info = ((login.get("data") or {}).get("sessionInfo") or {})
+    if not isinstance(session_info, dict):
+        raise ValueError("session file has invalid sessionInfo")
+    return record, device_id, session_info
+
+
+def session_status(session_file: Path) -> dict:
+    record, _, session_info = load_session(session_file)
+    cookies = session_info.get("cookies")
+    return {
+        "authenticated": bool(session_info.get("sessionId")),
+        "refreshable": bool(session_info.get("refreshToken")),
+        "cookieCount": len(cookies) if isinstance(cookies, list) else 0,
+        "method": (record.get("local") or {}).get("method", "unknown"),
+        "deviceIdStored": True,
+    }
+
+
+def refresh_session(session_file: Path) -> None:
+    _, device_id, session_info = load_session(session_file)
+    refresh_token = session_info.get("refreshToken")
+    session_id = session_info.get("sessionId")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise ValueError("session file has no refresh token")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("session file has no session ID")
+    payload = client_context(device_id)
+    payload["clientUser"]["sessionId"] = session_id
+    payload["sessionToken"] = refresh_token
+    result = request("capi/login.autoLogin", payload)
+    store_session(session_file, device_id, "refresh", result)
 
 
 def authorize(device_id: str, qr_file: Path, session_file: Path) -> int:
@@ -201,12 +255,32 @@ def main() -> int:
     actions.add_argument("--send-sms", metavar="PHONE")
     actions.add_argument("--sms-login", nargs=2, metavar=("PHONE", "CODE"))
     actions.add_argument("--password-login", metavar="LOGIN_NAME")
+    actions.add_argument("--refresh-session", action="store_true")
+    actions.add_argument("--session-status", action="store_true")
     parser.add_argument("--area-code", default="86")
     parser.add_argument("--qr-file", type=Path, default=Path("/tmp/biubiu-login-qr.png"))
     parser.add_argument(
         "--session-file", type=Path, default=Path("/tmp/biubiu-session.json")
     )
     args = parser.parse_args()
+
+    if args.session_status:
+        try:
+            print(json.dumps(session_status(args.session_file), indent=2))
+            return 0
+        except Exception as exc:
+            print(f"session status failed: {exc}", file=sys.stderr)
+            return 1
+
+    if args.refresh_session:
+        try:
+            refresh_session(args.session_file)
+            print(f"SESSION_REFRESHED {args.session_file}")
+            return 0
+        except Exception as exc:
+            print(f"session refresh failed: {exc}", file=sys.stderr)
+            return 1
+
     try:
         device_id = resolve_device_id(args.device_id, args.device_id_file)
     except (ValueError, OSError) as exc:

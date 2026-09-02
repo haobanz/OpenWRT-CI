@@ -49,12 +49,19 @@ capi/login.autoLoginByCode
 capi/login.sendSmsCode
 capi/login.loginWithSmsCode
 capi/login.loginByPassword
+capi/login.autoLogin
 ```
 
 The phone login request fields are `mobile`, `areaCode`, and, for the exchange
 step, `smsCode`. Password login uses `loginName`, `areaCode`, and `password`;
 the password is protected by the encrypted request envelope. The CLI reads it
 without echo from the controlling terminal and never accepts it in argv.
+
+Session refresh requires both values returned by login: `refreshToken` is sent
+as `sessionToken`, while the current `sessionId` remains in
+`clientUser.sessionId`. Omitting the latter is rejected by the service. A
+successful refresh returns a complete replacement `sessionInfo`; callers must
+write it atomically and retain mode `0600`.
 
 The QR state machine is:
 
@@ -85,7 +92,8 @@ Windows process scanner on the accelerated machine.
 
 ## Remaining milestones
 
-1. Persist and refresh the authorized account session without exposing it.
+1. Port root-only session persistence and refresh from the reference lab to the
+   OpenWrt service layer.
 2. Reproduce game list, game profile, entitlement check, and node selection.
 3. Decode signal login, heartbeat, and channel authorization responses.
 4. Implement the smallest compatible data channel, initially TCP and UDP,

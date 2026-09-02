@@ -30,11 +30,11 @@ same time.
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
 - Version 0.2.0 completes the QR handshake and implements phone SMS and hidden
-  password login. The phone endpoints pass router-side protocol validation;
-  a successful account exchange still requires the owner's one-time input.
+  password login. A user-authorized SMS exchange and subsequent session refresh
+  were verified against the production account service on 2026-09-03.
 - CI builds it as a standalone APK, but it is not installed in the firmware
-  until account refresh, game profile, node selection, and transport steering
-  have all passed router tests.
+  until game profile, node selection, and transport steering have all passed
+  router tests.
 - Protocol facts, open questions, and the clean-room boundary are documented
   in `biubiu-acc/docs/protocol.md`.
 
