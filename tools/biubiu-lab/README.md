@@ -81,6 +81,14 @@ preserves typed length-value extensions and payloads. All integers use the
 verified network byte order. Opaque values and payloads are excluded from
 representations, and the module has no networking code.
 
+`biubiu_heartbeat_model.py` models the direct signal heartbeat without opening
+a socket. It builds the observed inner payload, `x-biu-client` header and outer
+POST body, reproduces AES-128-CBC/PKCS7 with Android Base64 formatting, and
+parses returned state plus refreshed channel endpoints. Cipher material is an
+explicit caller-supplied input and is hidden from object representations. The
+app's protected heartbeat key and IV are not present in this repository; tests
+use synthetic 16-byte values only.
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
