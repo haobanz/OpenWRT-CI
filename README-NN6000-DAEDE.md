@@ -7,7 +7,7 @@ This is the self-maintained profile used by the DAEDE build workflow.
 - Proxy stack: OpenClash, dae, daed, and luci-app-daede
 - Kernel support: detached `vmlinux-btf`, `kmod-sched-bpf`, and XDP sockets
 - Pinned daed source: see `vendor/daede/REVISION`
-- Experimental clean-room biubiu client: standalone APK only until the data
+- Experimental clean-room biubiu CLI: preinstalled but inert until the data
   channel and LAN steering pass router tests
 
 The workflow publishes both firmware images and the matching APK packages in

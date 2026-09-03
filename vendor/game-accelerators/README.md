@@ -36,9 +36,9 @@ same time.
   the acceleration API's separate key/IV ADAT envelope. An external
   `version|base64(X.509 DER)` public key can be validated and cached in a
   root-only file without embedding the app's protected bootstrap value.
-- CI builds it as a standalone APK, but it is not installed in the firmware
-  until game profile, node selection, and transport steering have all passed
-  router tests.
+- The CLI is preinstalled in the firmware and also published as a standalone
+  APK. It has no init service and remains inert until game profile, node
+  selection, and transport steering have all passed router tests.
 - Protocol facts, open questions, and the clean-room boundary are documented
   in `biubiu-acc/docs/protocol.md`.
 

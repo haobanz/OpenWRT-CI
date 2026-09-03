@@ -225,6 +225,7 @@ for required_package in \
 	leigod-acc \
 	luci-app-leigod-acc \
 	luci-i18n-leigod-acc-zh-cn \
+	biubiu-acc \
 	dae \
 	daed \
 	luci-app-daede \

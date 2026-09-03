@@ -198,6 +198,7 @@ jobs:
           grep -q '^leigod-acc ' "$manifest"
           grep -q '^luci-app-leigod-acc ' "$manifest"
           grep -q '^luci-i18n-leigod-acc-zh-cn ' "$manifest"
+          grep -q '^biubiu-acc ' "$manifest"
           cp -f "$sysupgrade" "$factory" "$upload_dir/"
 
           find immortalwrt-local/bin -type f \( \
@@ -301,13 +302,15 @@ jobs:
             发布四个自维护插件 APK（含雷神中文语言包）。使用前应让
             OpenClash/dae 绕过加速设备。
 
-            Release 另附实验性的 biubiu-acc APK。它是本仓库的独立实现，当前
+            固件预装实验性的 biubiu-acc CLI，Release 也附带独立 APK。它是本
+            仓库的独立实现，当前
             已完成二维码协议，并实现短信验证码和隐藏输入密码登录；手机登录的
             真实会话及安全续期已经账号本人授权验证。0.5.0 已将稳定设备 ID、
             root 私有会话存储、脱敏状态查询和原子续期移植到 OpenWrt C 客户端，
             并包含加速业务独立 key/IV 的 ADAT 离线编解码、外部 RSA 公钥导入、
-            0600 缓存和脱敏指纹状态；不内置受保护的引导公钥。数据通道与指定
-            LAN 设备路由仍在验证，因此暂不预装进固件，也不会接管流量。
+            0600 缓存和脱敏指纹状态；不内置受保护的引导公钥。当前没有 init
+            服务或 LuCI 页面，数据通道与指定 LAN 设备路由仍在验证，因此默认
+            不运行，也不会接管流量。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。
