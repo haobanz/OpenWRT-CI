@@ -155,7 +155,8 @@ function saveConfig(changes) {
 		target_id: current.target_id || '',
 		area_id: current.area_id || '',
 		platform_id: current.platform_id || '',
-		log_level: current.log_level || 'info'
+		log_level: current.log_level || 'info',
+		openclash_mode: current.openclash_mode || 'exclusive'
 	};
 	Object.keys(changes || {}).forEach(function(key) { payload[key] = changes[key]; });
 	return runRequest(payload);
@@ -268,8 +269,10 @@ function formatBytes(value) {
 function phaseBadge() {
 	if (snapshot.accelerating)
 		return badge(_('加速中'), 'ok');
-	if (snapshot.phase === 'transport_incomplete')
-		return badge(_('通道开发中'), 'warn');
+	if (snapshot.phase === 'ready')
+		return badge(_('已就绪'), 'ok');
+	if (snapshot.phase === 'traffic_error')
+		return badge(_('接管异常'), 'warn');
 	return badge(snapshot.phase_message || _('等待配置'), 'idle');
 }
 
@@ -406,6 +409,9 @@ function showProfileModal() {
 	const logLevel = select([
 		[ 'debug', 'Debug' ], [ 'info', 'Info' ], [ 'warn', 'Warn' ], [ 'error', 'Error' ]
 	], config.log_level || 'info');
+	const openclashMode = select([
+		[ 'exclusive', _('独占：启动加速时自动停止 OpenClash') ]
+	], config.openclash_mode || 'exclusive');
 	game.setAttribute('inputmode', 'numeric');
 	area.setAttribute('inputmode', 'numeric');
 	platform.setAttribute('inputmode', 'numeric');
@@ -414,7 +420,8 @@ function showProfileModal() {
 			[ _('游戏 ID'), game ],
 			[ _('区服 ID'), area ],
 			[ _('平台 ID'), platform ],
-			[ _('日志级别'), logLevel ]
+			[ _('日志级别'), logLevel ],
+			[ _('OpenClash 冲突策略'), openclashMode ]
 		]),
 		modalActions([
 			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
@@ -422,7 +429,8 @@ function showProfileModal() {
 				return withBusy(ev, function() {
 					return saveConfig({
 						target_id: game.value.trim(), area_id: area.value.trim(),
-						platform_id: platform.value.trim(), log_level: logLevel.value
+						platform_id: platform.value.trim(), log_level: logLevel.value,
+						openclash_mode: openclashMode.value
 					}).then(ui.hideModal);
 				});
 			})
@@ -529,8 +537,24 @@ function renderDevices() {
 	]);
 }
 
+function positiveId(value) {
+	return /^[1-9][0-9]*$/.test(String(value || ''));
+}
+
+function controlButton(label, operation, disabled) {
+	return button(label, 'cbi-button-neutral', function(ev) {
+		return withBusy(ev, function() {
+			return runRequest({ operation: operation });
+		});
+	}, disabled);
+}
+
 function renderAcceleration() {
 	const config = snapshot.config || {};
+	const session = snapshot.session || {};
+	const key = snapshot.acceleration_key || {};
+	const dataPlane = snapshot.data_plane || {};
+	const traffic = snapshot.traffic || {};
 	const profiles = profileMap();
 	const selectedIds = Array.isArray(config.selected_games) ? config.selected_games : [];
 	const selectedRows = selectedIds.filter(function(id) { return profiles[id]; }).map(function(id) {
@@ -553,8 +577,29 @@ function renderAcceleration() {
 			return withBusy(ev, function() { return saveConfig({ scope: 'device' }); });
 		})
 	]);
+	const hasLocalHint = selectedIds.some(function(id) {
+		return id === 'steam' || id === 'counter-strike-2';
+	});
+	const idsReady = positiveId(config.target_id) && positiveId(config.area_id) &&
+		positiveId(config.platform_id);
+	const profileReady = !!dataPlane.profile_cached;
+	const authorizationReady = !!dataPlane.authorization_cached;
+	const runtimeReady = !!dataPlane.runtime_cached;
+	const calloutClass = snapshot.accelerating || snapshot.phase === 'ready'
+		? 'bba-callout bba-callout-info' : 'bba-callout';
+	const actionButton = snapshot.accelerating
+		? button(_('停止加速'), 'cbi-button-negative', function(ev) {
+			return withBusy(ev, function() {
+				return runRequest({ operation: 'acceleration_action', action: 'stop' });
+			});
+		})
+		: button(_('开始加速'), 'cbi-button-positive', function(ev) {
+			return withBusy(ev, function() {
+				return runRequest({ operation: 'acceleration_action', action: 'start' });
+			});
+		}, !snapshot.data_plane_ready || !hasLocalHint);
 	return E('div', {}, [
-		E('div', { 'class': 'bba-callout' }, _('数据通道尚未完成；当前版本不会修改 nftables，也不会接管任何 LAN 流量。')),
+		E('div', { 'class': calloutClass }, snapshot.phase_message || _('等待配置')),
 		section(_('加速范围'), [], E('div', { 'class': 'bba-scope-row' }, [
 			scopeControl,
 			E('span', { 'class': 'bba-muted' }, config.scope === 'device'
@@ -569,15 +614,27 @@ function renderAcceleration() {
 			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, config.target_id || '-') ]),
 			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, config.area_id || '-') ]),
 			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, config.platform_id || '-') ]),
-			E('tr', {}, [ E('td', {}, _('日志级别')), E('td', {}, config.log_level || 'info') ])
+			E('tr', {}, [ E('td', {}, _('日志级别')), E('td', {}, config.log_level || 'info') ]),
+			E('tr', {}, [ E('td', {}, _('OpenClash 冲突策略')), E('td', {}, config.openclash_mode || 'exclusive') ])
 		])),
+		section(_('服务端控制'), [
+			controlButton(_('刷新游戏目录'), 'game_list', !session.authenticated || !key.cached),
+			controlButton(_('检查权益'), 'check_speedup', !session.authenticated || !key.cached || !idsReady),
+			controlButton(_('获取节点配置'), 'profile_fetch', !session.authenticated || !key.cached || !idsReady),
+			controlButton(_('登录数据通道'), 'signal_login', !session.authenticated || !key.cached || !profileReady || !idsReady),
+			controlButton(_('续期数据通道'), 'channel_renew', !session.authenticated || !key.cached || !profileReady || !authorizationReady || !idsReady),
+			controlButton(_('生成运行时配置'), 'runtime_prepare', !profileReady || !authorizationReady)
+		], E('div', { 'class': 'bba-callout bba-callout-info' }, _('控制 API 会把授权后的节点和通道凭据保存在路由器 root 私有目录；不会在页面或日志中显示令牌。'))),
 		section(_('数据通道'), [
-			button(_('开始加速'), 'cbi-button-positive', null, true, _('数据通道尚未实现'))
+			actionButton
 		], table([ _('状态'), _('结果') ], [
-			E('tr', {}, [ E('td', {}, _('控制 API')), E('td', {}, badge(_('开发中'), 'warn')) ]),
-			E('tr', {}, [ E('td', {}, _('Bolt 通道')), E('td', {}, badge(_('仅编解码完成'), 'info')) ]),
+			E('tr', {}, [ E('td', {}, _('控制 API')), E('td', {}, snapshot.capabilities && snapshot.capabilities.control_api ? badge(_('可用'), 'ok') : badge(_('未安装'), 'warn')) ]),
+			E('tr', {}, [ E('td', {}, _('节点配置')), E('td', {}, profileReady ? badge(_('已缓存'), 'ok') : badge(_('未获取'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('数据通道授权')), E('td', {}, authorizationReady ? badge(_('已授权'), 'ok') : badge(_('未授权'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('运行时配置')), E('td', {}, runtimeReady ? badge(_('已生成'), 'ok') : badge(_('未生成'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('Bolt TCP/UDP')), E('td', {}, snapshot.capabilities && snapshot.capabilities.data_channel ? badge(_('可用'), 'ok') : badge(_('未安装'), 'warn')) ]),
 			E('tr', {}, [ E('td', {}, _('游戏流量匹配')), E('td', {}, selectedRows.length ? badge(_('规则已选择'), 'info') : badge(_('未配置'), 'idle')) ]),
-			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, badge(_('未启用'), 'idle')) ])
+			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, traffic.accelerating ? badge(_('已接管'), 'ok') : badge(_('未启用'), 'idle')) ])
 		]))
 	]);
 }
@@ -599,7 +656,7 @@ function renderMatchStatus() {
 	if (!status.available) {
 		content = E('div', { 'class': 'bba-callout' }, status.error || _('实时匹配不可用'));
 	} else if (!status.hints_available) {
-		content = E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前所选目录没有可安全用于本地端口识别的提示；服务端规则仍未接入。'));
+		content = E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前所选目录没有可安全用于本地端口识别的提示；请先获取服务端 profile 再启动。'));
 	} else if (!rows.length) {
 		content = E('div', { 'class': 'bba-empty' }, _('暂未发现命中的游戏流量。打开游戏并进入联网/匹配页面后刷新。'));
 	} else {

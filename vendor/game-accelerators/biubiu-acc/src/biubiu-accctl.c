@@ -16,17 +16,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.7.1"
+#define BIUBIU_ACC_VERSION "0.8.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
+#define ACCELERATION_ORIGIN "https://gtm-main.biubiu001.com"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
 #define MAX_STATE_SIZE (1024U * 1024U)
 #define DEFAULT_DEVICE_ID_FILE "/etc/biubiu-acc/device-id"
 #define DEFAULT_SESSION_FILE "/etc/biubiu-acc/session.json"
 #define DEFAULT_ACCELERATION_KEY_FILE "/etc/biubiu-acc/acceleration-key.json"
+#define DEFAULT_GAME_LIST_FILE "/etc/biubiu-acc/game-list.json"
+#define DEFAULT_ENTITLEMENT_FILE "/etc/biubiu-acc/entitlement.json"
+#define DEFAULT_PROFILE_FILE "/etc/biubiu-acc/profile.json"
+#define DEFAULT_AUTHORIZATION_FILE "/etc/biubiu-acc/authorization.json"
+#define DEFAULT_CHANNEL_TICKET_FILE "/etc/biubiu-acc/channel-ticket.json"
+#define DEFAULT_RUNTIME_FILE "/etc/biubiu-acc/runtime.json"
 
 #define BOLT_PROTOCOL_VERSION 3U
 #define BOLT_DATA_HEADER_LENGTH 11U
@@ -37,6 +46,19 @@
 #define BOLT_COMMAND_ASSOCIATE_RESPONSE 0x25U
 #define BOLT_COMMAND_ERROR 0x27U
 #define BOLT_STATUS_SUCCESS 0x22U
+
+#define GAME_LIST_ENDPOINT \
+    "/api/ping-server.game.ns.gameListV2?df=adat&ver=1.0.0"
+#define SEARCH_GAME_ENDPOINT \
+    "/api/ping-server.game.ns.searchGame?df=adat&ver=1.0.0"
+#define CHECK_SPEEDUP_ENDPOINT \
+    "/api/ping-server.biuvpn.game.checkSpeedup?df=adat&ver=1.0.0"
+#define SPEEDUP_CONFIG_ENDPOINT \
+    "/api/ping-server.biuvpn.game.getSpeedupConfig?df=adat&ver=1.0.1"
+#define SIGNAL_LOGIN_ENDPOINT \
+    "/api/ping-signal.open.login.loginV2?df=adat&ver=1.0.0"
+#define CHANNEL_TICKET_ENDPOINT \
+    "/api/ping-signal.open.auth.getChannelStV2?df=adat&ver=1.0.0"
 
 static const char public_key_pem[] =
     "-----BEGIN PUBLIC KEY-----\n"
@@ -1315,6 +1337,42 @@ static int session_components(json_object *record, const char **device_id,
     return 0;
 }
 
+static const char *json_scalar_string(json_object *object, const char *name)
+{
+    json_object *value = NULL;
+
+    if (!object || !json_object_object_get_ex(object, name, &value) ||
+        (json_object_get_type(value) != json_type_string &&
+         json_object_get_type(value) != json_type_int))
+        return NULL;
+    return json_object_get_string(value);
+}
+
+static int session_acceleration_identity(json_object *record,
+                                         const char **uid,
+                                         const char **service_ticket)
+{
+    json_object *login = object_member(record, "login", json_type_object);
+    json_object *data = object_member(login, "data", json_type_object);
+    json_object *user = object_member(data, "userBasicInfo", json_type_object);
+    json_object *session_info = session_info_from_record(record);
+    const char *stored_uid;
+    const char *stored_ticket;
+
+    if (!user || !session_info)
+        return -1;
+    stored_uid = json_scalar_string(user, "localId");
+    stored_ticket = string_member(session_info, "sessionId");
+    if (!decimal_string(stored_uid, 1, 24) || stored_uid[0] == '0' ||
+        !stored_ticket || !stored_ticket[0])
+        return -1;
+    if (uid)
+        *uid = stored_uid;
+    if (service_ticket)
+        *service_ticket = stored_ticket;
+    return 0;
+}
+
 static void cleanse_json_value(json_object *value)
 {
     size_t i;
@@ -1409,6 +1467,23 @@ out:
     json_object_put(local);
     json_object_put(record);
     return status;
+}
+
+static int store_private_json(const char *path, json_object *value)
+{
+    const char *serialized;
+
+    if (!path || !value || path[0] != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    serialized = json_object_to_json_string_ext(value, JSON_C_TO_STRING_PRETTY);
+    if (!serialized || strlen(serialized) > MAX_STATE_SIZE) {
+        errno = EFBIG;
+        return -1;
+    }
+    return atomic_private_write(path, (const unsigned char *)serialized,
+                                strlen(serialized));
 }
 
 static int print_session_status(const char *path)
@@ -1715,6 +1790,907 @@ out:
     json_object_put(outer);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    return status;
+}
+
+static char *new_request_id(void)
+{
+    struct timespec now;
+    unsigned long long milliseconds;
+    char *value = NULL;
+
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0)
+        return NULL;
+    milliseconds = (unsigned long long)now.tv_sec * 1000ULL +
+                  (unsigned long long)now.tv_nsec / 1000000ULL;
+    if (asprintf(&value, "%llu", milliseconds) < 0)
+        return NULL;
+    return value;
+}
+
+static json_object *build_acceleration_client(const char *device_id,
+                                               const char *uid,
+                                               const char *service_ticket)
+{
+    json_object *client = NULL;
+    json_object *extensions = NULL;
+
+    if (!device_id || !uid || !service_ticket || !device_id[0] || !uid[0] ||
+        !service_ticket[0])
+        return NULL;
+    client = json_object_new_object();
+    extensions = json_object_new_object();
+    if (!client || !extensions)
+        goto fail;
+    json_object_object_add(client, "appId", json_object_new_string("biubiu"));
+    json_object_object_add(client, "deviceId", json_object_new_string(device_id));
+    json_object_object_add(client, "deviceIdType", json_object_new_string("utdid"));
+    json_object_object_add(client, "hostAppId", json_object_new_string("biubiu"));
+    json_object_object_add(extensions, "os", json_object_new_string("openwrt"));
+    json_object_object_add(extensions, "ver",
+                           json_object_new_string(BIUBIU_ACC_VERSION));
+    json_object_object_add(extensions, "st",
+                           json_object_new_string(service_ticket));
+    json_object_object_add(extensions, "biuid", json_object_new_string(uid));
+    json_object_object_add(client, "ex", extensions);
+    return client;
+
+fail:
+    json_object_put(client);
+    json_object_put(extensions);
+    return NULL;
+}
+
+static json_object *build_acceleration_request(json_object *data,
+                                               json_object *client)
+{
+    json_object *request = NULL;
+    char *request_id = NULL;
+    const char *client_json;
+
+    if (!data || !client)
+        return NULL;
+    request_id = new_request_id();
+    client_json = json_object_to_json_string_ext(client, JSON_C_TO_STRING_PLAIN);
+    request = json_object_new_object();
+    if (!request || !request_id || !client_json)
+        goto fail;
+    json_object_object_add(request, "data", json_object_get(data));
+    json_object_object_add(request, "id", json_object_new_string(request_id));
+    json_object_object_add(request, "client", json_object_new_string(client_json));
+    free(request_id);
+    return request;
+
+fail:
+    free(request_id);
+    json_object_put(request);
+    return NULL;
+}
+
+static bool acceleration_response_success(json_object *response)
+{
+    json_object *code = NULL;
+
+    if (!response)
+        return false;
+    if (json_object_object_get_ex(response, "success", &code) &&
+        json_object_is_type(code, json_type_boolean))
+        return json_object_get_boolean(code);
+    if (!json_object_object_get_ex(response, "code", &code))
+        return false;
+    if (json_object_is_type(code, json_type_string)) {
+        const char *value = json_object_get_string(code);
+
+        return value && (!strcmp(value, "SUCCESS") || !strcmp(value, "2000000") ||
+                         !strcmp(value, "0"));
+    }
+    if (json_object_is_type(code, json_type_int)) {
+        int64_t value = json_object_get_int64(code);
+
+        return value == 0 || value == 2000000;
+    }
+    return false;
+}
+
+static int print_acceleration_result_summary(const char *operation,
+                                             json_object *response,
+                                             const char *stored_path)
+{
+    json_object *summary = NULL;
+    json_object *code = NULL;
+    json_object *data = NULL;
+
+    summary = json_object_new_object();
+    if (!summary)
+        return 1;
+    json_object_object_add(summary, "success",
+                           json_object_new_boolean(acceleration_response_success(response)));
+    json_object_object_add(summary, "operation",
+                           json_object_new_string(operation ? operation : "control"));
+    if (response && json_object_object_get_ex(response, "code", &code))
+        json_object_object_add(summary, "code", json_object_get(code));
+    json_object_object_add(summary, "stored",
+                           json_object_new_boolean(stored_path != NULL));
+    if (stored_path)
+        json_object_object_add(summary, "stateFile",
+                               json_object_new_string(stored_path));
+    if (response && json_object_object_get_ex(response, "data", &data))
+        json_object_object_add(summary, "hasData", json_object_new_boolean(true));
+    puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+    json_object_put(summary);
+    return 0;
+}
+
+static int acceleration_api_request(const char *endpoint, json_object *data,
+                                    const char *session_file,
+                                    const char *acceleration_key_file,
+                                    json_object **result)
+{
+    json_object *record = NULL;
+    json_object *client = NULL;
+    json_object *request = NULL;
+    json_object *envelope = NULL;
+    json_object *outer = NULL;
+    struct acceleration_public_key key = {0};
+    struct adat_session_keys keys = {{0}, {0}};
+    const char *uid = NULL;
+    const char *service_ticket = NULL;
+    char *url = NULL;
+    const char *body;
+    CURL *curl = NULL;
+    struct curl_slist *headers = NULL;
+    struct response_buffer response = {0};
+    CURLcode curl_status;
+    long http_status = 0;
+    int decrypt_status;
+    int status = -1;
+
+    if (!endpoint || !data || !result || !strstr(endpoint, "df=adat")) {
+        errno = EINVAL;
+        return -1;
+    }
+    *result = NULL;
+    if (load_session_record(session_file, &record) != 0 ||
+        session_acceleration_identity(record, &uid, &service_ticket) != 0) {
+        fputs("acceleration control requires a valid private account session\n",
+              stderr);
+        goto out;
+    }
+    if (load_acceleration_key(acceleration_key_file, &key) != 0) {
+        fputs("acceleration control requires a cached ADAT public key\n", stderr);
+        goto out;
+    }
+    client = build_acceleration_client(string_member(object_member(record, "local",
+                                                                    json_type_object),
+                                                      "deviceId"),
+                                       uid, service_ticket);
+    request = build_acceleration_request(data, client);
+    envelope = build_adat_envelope(request, key.version, key.key, &keys);
+    body = envelope ? json_object_to_json_string_ext(envelope,
+                                                      JSON_C_TO_STRING_PLAIN) : NULL;
+    if (!client || !request || !envelope || !body ||
+        asprintf(&url, "%s%s", ACCELERATION_ORIGIN, endpoint) < 0)
+        goto out;
+    curl = curl_easy_init();
+    if (!curl)
+        goto out;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    if (!headers)
+        goto out;
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, response_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "biubiu-acc/" BIUBIU_ACC_VERSION);
+    curl_status = curl_easy_perform(curl);
+    if (curl_status != CURLE_OK) {
+        fprintf(stderr, "acceleration request failed: %s%s\n",
+                curl_easy_strerror(curl_status),
+                response.too_large ? " (response too large)" : "");
+        goto out;
+    }
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    if (http_status < 200 || http_status >= 300) {
+        fprintf(stderr, "acceleration request failed: HTTP %ld\n", http_status);
+        goto out;
+    }
+    outer = json_tokener_parse(response.data ? response.data : "");
+    if (!outer) {
+        fputs("acceleration request returned invalid JSON\n", stderr);
+        goto out;
+    }
+    decrypt_status = decrypt_adat_response(outer, &keys, result);
+    if (decrypt_status == 2) {
+        fputs("acceleration public key rotation is required; import the new key first\n",
+              stderr);
+        status = 2;
+        goto out;
+    }
+    if (decrypt_status != 0) {
+        fputs("unable to decrypt acceleration response\n", stderr);
+        goto out;
+    }
+    status = 0;
+
+out:
+    OPENSSL_cleanse(&keys, sizeof(keys));
+    acceleration_public_key_free(&key);
+    free(url);
+    free(response.data);
+    json_object_put(outer);
+    json_object_put(envelope);
+    json_object_put(request);
+    json_object_put(client);
+    cleanse_json_value(record);
+    json_object_put(record);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return status;
+}
+
+static int parse_unsigned_argument(const char *value, uint64_t maximum,
+                                   uint64_t *result)
+{
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (!value || !value[0] || !decimal_string(value, 1, 20))
+        return -1;
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno == ERANGE || !end || *end || parsed == 0 || parsed > maximum)
+        return -1;
+    *result = (uint64_t)parsed;
+    return 0;
+}
+
+static int run_acceleration_operation(const char *operation,
+                                      const char *endpoint, json_object *data,
+                                      const char *store_path,
+                                      const char *session_file,
+                                      const char *acceleration_key_file)
+{
+    json_object *result = NULL;
+    bool stored = false;
+    int request_status;
+    int status = 1;
+
+    request_status = acceleration_api_request(endpoint, data, session_file,
+                                              acceleration_key_file, &result);
+    if (request_status != 0)
+        goto out;
+    if (!acceleration_response_success(result)) {
+        print_acceleration_result_summary(operation, result, NULL);
+        status = 3;
+        goto out;
+    }
+    if (store_path && store_private_json(store_path, result) != 0) {
+        fprintf(stderr, "unable to store %s response: %s\n", operation,
+                strerror(errno));
+        goto out;
+    }
+    stored = store_path != NULL;
+    print_acceleration_result_summary(operation, result, stored ? store_path : NULL);
+    status = 0;
+
+out:
+    cleanse_json_value(result);
+    json_object_put(result);
+    return status == 1 && request_status == 2 ? 4 : status;
+}
+
+static int run_game_list(const char *session_file, const char *key_file,
+                         int argument_count, char **arguments)
+{
+    json_object *data = NULL;
+    json_object *page = NULL;
+    uint64_t page_number = 1;
+    uint64_t page_size = 50;
+    int status;
+
+    if (argument_count > 2 ||
+        (argument_count > 0 && parse_unsigned_argument(arguments[0], 100000,
+                                                        &page_number) != 0) ||
+        (argument_count > 1 && parse_unsigned_argument(arguments[1], 1000,
+                                                        &page_size) != 0)) {
+        fputs("game-list accepts PAGE and SIZE as positive integers\n", stderr);
+        return 2;
+    }
+    data = json_object_new_object();
+    page = json_object_new_object();
+    if (!data || !page) {
+        json_object_put(data);
+        json_object_put(page);
+        return 1;
+    }
+    json_object_object_add(page, "page", json_object_new_int64((int64_t)page_number));
+    json_object_object_add(page, "size", json_object_new_int64((int64_t)page_size));
+    json_object_object_add(data, "page", page);
+    json_object_object_add(data, "lastSortKey", json_object_new_string(""));
+    status = run_acceleration_operation("game-list", GAME_LIST_ENDPOINT, data,
+                                        DEFAULT_GAME_LIST_FILE, session_file,
+                                        key_file);
+    json_object_put(data);
+    return status;
+}
+
+static int run_game_search(const char *session_file, const char *key_file,
+                           int argument_count, char **arguments)
+{
+    json_object *data = NULL;
+    json_object *page = NULL;
+    uint64_t page_number = 1;
+    uint64_t page_size = 50;
+    int status;
+
+    if (argument_count < 1 || argument_count > 3 || !arguments[0][0] ||
+        strlen(arguments[0]) > 128 ||
+        (argument_count > 1 && parse_unsigned_argument(arguments[1], 100000,
+                                                        &page_number) != 0) ||
+        (argument_count > 2 && parse_unsigned_argument(arguments[2], 1000,
+                                                        &page_size) != 0)) {
+        fputs("game-search accepts KEYWORD [PAGE SIZE]\n", stderr);
+        return 2;
+    }
+    data = json_object_new_object();
+    page = json_object_new_object();
+    if (!data || !page) {
+        json_object_put(data);
+        json_object_put(page);
+        return 1;
+    }
+    json_object_object_add(data, "keyword", json_object_new_string(arguments[0]));
+    json_object_object_add(page, "page", json_object_new_int64((int64_t)page_number));
+    json_object_object_add(page, "size", json_object_new_int64((int64_t)page_size));
+    json_object_object_add(data, "page", page);
+    status = run_acceleration_operation("game-search", SEARCH_GAME_ENDPOINT, data,
+                                        DEFAULT_GAME_LIST_FILE, session_file,
+                                        key_file);
+    json_object_put(data);
+    return status;
+}
+
+static int run_check_speedup(const char *session_file, const char *key_file,
+                             int argument_count, char **arguments)
+{
+    json_object *data = NULL;
+    uint64_t game_id;
+    uint64_t area_id;
+    uint64_t polling = 0;
+    int status;
+
+    if ((argument_count != 2 && argument_count != 3) ||
+        parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0 ||
+        parse_unsigned_argument(arguments[1], INT32_MAX, &area_id) != 0 ||
+        (argument_count == 3 &&
+         parse_unsigned_argument(arguments[2], INT32_MAX, &polling) != 0)) {
+        fputs("check-speedup accepts GAME_ID AREA_ID [POLLING]\n", stderr);
+        return 2;
+    }
+    data = json_object_new_object();
+    if (!data)
+        return 1;
+    json_object_object_add(data, "gameId", json_object_new_int64((int64_t)game_id));
+    json_object_object_add(data, "areaId", json_object_new_int64((int64_t)area_id));
+    json_object_object_add(data, "polling", json_object_new_int64((int64_t)polling));
+    json_object_object_add(data, "space", json_object_new_int(0));
+    status = run_acceleration_operation("check-speedup", CHECK_SPEEDUP_ENDPOINT,
+                                        data, DEFAULT_ENTITLEMENT_FILE,
+                                        session_file, key_file);
+    json_object_put(data);
+    return status;
+}
+
+static int run_profile_request(const char *session_file, const char *key_file,
+                               int argument_count, char **arguments)
+{
+    json_object *data = NULL;
+    json_object *package_request = NULL;
+    json_object *package_info = NULL;
+    uint64_t game_id;
+    uint64_t area_id;
+    uint64_t platform_id;
+    int status;
+
+    if (argument_count != 3 ||
+        parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0 ||
+        parse_unsigned_argument(arguments[1], INT32_MAX, &area_id) != 0 ||
+        parse_unsigned_argument(arguments[2], INT32_MAX, &platform_id) != 0 ||
+        platform_id < 2 || platform_id > 10) {
+        fputs("profile-fetch accepts GAME_ID AREA_ID PLATFORM_ID\n", stderr);
+        return 2;
+    }
+    data = json_object_new_object();
+    package_request = json_object_new_object();
+    package_info = json_object_new_object();
+    if (!data || !package_request || !package_info) {
+        json_object_put(data);
+        json_object_put(package_request);
+        json_object_put(package_info);
+        return 1;
+    }
+    json_object_object_add(package_info, "appName", json_object_new_string(""));
+    json_object_object_add(package_info, "packageName", json_object_new_string(""));
+    json_object_object_add(package_info, "versionName", json_object_new_string(""));
+    json_object_object_add(package_info, "versionCode", json_object_new_string(""));
+    json_object_object_add(package_request, "gamePackageInfo", package_info);
+    json_object_object_add(package_request, "signCheckPackageList",
+                           json_object_new_array());
+    json_object_object_add(package_request, "sourcePkgList", json_object_new_array());
+    json_object_object_add(data, "gameId", json_object_new_int64((int64_t)game_id));
+    json_object_object_add(data, "areaId", json_object_new_int64((int64_t)area_id));
+    json_object_object_add(data, "space", json_object_new_int(0));
+    json_object_object_add(data, "platformId",
+                           json_object_new_int64((int64_t)platform_id));
+    json_object_object_add(data, "pkgRequest", package_request);
+    status = run_acceleration_operation("profile-fetch", SPEEDUP_CONFIG_ENDPOINT,
+                                        data, DEFAULT_PROFILE_FILE, session_file,
+                                        key_file);
+    json_object_put(data);
+    return status;
+}
+
+static int load_private_json(const char *path, json_object **result)
+{
+    struct bytes contents = {0};
+    json_object *parsed = NULL;
+    int status = -1;
+
+    if (!result || read_private_file(path, &contents) != 0)
+        return -1;
+    parsed = json_tokener_parse((const char *)contents.data);
+    if (!parsed || !json_object_is_type(parsed, json_type_object)) {
+        errno = EINVAL;
+        goto out;
+    }
+    *result = parsed;
+    parsed = NULL;
+    status = 0;
+
+out:
+    cleanse_json_value(parsed);
+    json_object_put(parsed);
+    bytes_free(&contents);
+    return status;
+}
+
+static json_object *control_data_object(json_object *response)
+{
+    json_object *data = NULL;
+
+    if (response && json_object_object_get_ex(response, "data", &data) &&
+        json_object_is_type(data, json_type_object))
+        return data;
+    return response;
+}
+
+static json_object *profile_signal_config(json_object *profile)
+{
+    json_object *outbound = object_member(profile, "outboundProfile", json_type_object);
+
+    return object_member(outbound, "signalConfig", json_type_object);
+}
+
+static json_object *profile_channel_list(json_object *profile,
+                                         json_object **owned_detail)
+{
+    json_object *outbound = object_member(profile, "outboundProfile", json_type_object);
+    json_object *configs = object_member(outbound, "outboundConfigList", json_type_array);
+    size_t index;
+
+    if (owned_detail)
+        *owned_detail = NULL;
+    if (!configs || !json_object_is_type(configs, json_type_array))
+        return NULL;
+    for (index = 0; index < json_object_array_length(configs); index++) {
+        json_object *config = json_object_array_get_idx(configs, index);
+        json_object *detail = NULL;
+        json_object *channels = NULL;
+
+        if (!config || !json_object_is_type(config, json_type_object))
+            continue;
+        if (!json_object_object_get_ex(config, "rawDetailConfig", &detail))
+            json_object_object_get_ex(config, "config", &detail);
+        if (!detail)
+            continue;
+        if (json_object_is_type(detail, json_type_string)) {
+            detail = json_tokener_parse(json_object_get_string(detail));
+            if (!detail)
+                continue;
+            if (owned_detail)
+                *owned_detail = detail;
+        }
+        if (!json_object_is_type(detail, json_type_object) ||
+            !json_object_object_get_ex(detail, "dataChannelList", &channels) ||
+            !json_object_is_type(channels, json_type_array) ||
+            !json_object_array_length(channels)) {
+            if (owned_detail && *owned_detail) {
+                json_object_put(*owned_detail);
+                *owned_detail = NULL;
+            }
+            continue;
+        }
+        return channels;
+    }
+    return NULL;
+}
+
+static json_object *profile_channel_by_protocol(json_object *channels,
+                                                const char *protocol)
+{
+    size_t index;
+
+    if (!channels || !protocol || !json_object_is_type(channels, json_type_array))
+        return NULL;
+    for (index = 0; index < json_object_array_length(channels); index++) {
+        json_object *channel = json_object_array_get_idx(channels, index);
+        const char *value = string_member(channel, "proType");
+
+        if (value && !strcasecmp(value, protocol))
+            return channel;
+    }
+    return NULL;
+}
+
+static json_object *build_engine_client(uint64_t game_id, uint64_t area_id,
+                                        uint64_t platform_id, const char *uid,
+                                        const char *signal_session_id,
+                                        json_object *profile)
+{
+    json_object *client = NULL;
+    const char *engine_version;
+    const char *speedup_session;
+
+    if (!uid || !signal_session_id)
+        return NULL;
+    client = json_object_new_object();
+    if (!client)
+        return NULL;
+    engine_version = string_member(profile, "engineVersion");
+    speedup_session = string_member(profile, "speedupSession");
+    json_object_object_add(client, "gameId",
+                           json_object_new_int64((int64_t)game_id));
+    json_object_object_add(client, "areaId",
+                           json_object_new_int64((int64_t)area_id));
+    json_object_object_add(client, "platformId",
+                           json_object_new_int64((int64_t)platform_id));
+    json_object_object_add(client, "type",
+                           json_object_new_int64((int64_t)platform_id));
+    json_object_object_add(client, "uid", json_object_new_string(uid));
+    json_object_object_add(client, "appId", json_object_new_string("biubiu"));
+    json_object_object_add(client, "engineVersion",
+                           json_object_new_string(engine_version && engine_version[0]
+                                                       ? engine_version
+                                                       : "3.0.0"));
+    json_object_object_add(client, "signalSessionId",
+                           json_object_new_string(signal_session_id));
+    if (speedup_session && speedup_session[0])
+        json_object_object_add(client, "speedupSession",
+                               json_object_new_string(speedup_session));
+    return client;
+}
+
+static int run_signal_login(const char *session_file, const char *key_file,
+                            int argument_count, char **arguments)
+{
+    json_object *record = NULL;
+    json_object *profile_response = NULL;
+    json_object *profile;
+    json_object *signal_config;
+    json_object *channels;
+    json_object *owned_detail = NULL;
+    json_object *engine_client = NULL;
+    json_object *data = NULL;
+    json_object *channel_list = NULL;
+    const char *uid = NULL;
+    const char *service_ticket = NULL;
+    const char *signal_ticket;
+    uint64_t game_id;
+    uint64_t area_id;
+    uint64_t platform_id;
+    size_t index;
+    int status = 1;
+
+    if (argument_count != 3 ||
+        parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0 ||
+        parse_unsigned_argument(arguments[1], INT32_MAX, &area_id) != 0 ||
+        parse_unsigned_argument(arguments[2], INT32_MAX, &platform_id) != 0) {
+        fputs("signal-login accepts GAME_ID AREA_ID PLATFORM_ID\n", stderr);
+        return 2;
+    }
+    if (load_session_record(session_file, &record) != 0 ||
+        session_acceleration_identity(record, &uid, &service_ticket) != 0 ||
+        load_private_json(DEFAULT_PROFILE_FILE, &profile_response) != 0) {
+        fputs("signal-login requires a stored account session and profile\n", stderr);
+        goto out;
+    }
+    (void)service_ticket;
+    profile = control_data_object(profile_response);
+    signal_config = profile_signal_config(profile);
+    signal_ticket = string_member(signal_config, "signalSt");
+    channels = profile_channel_list(profile, &owned_detail);
+    if (!signal_ticket || !signal_ticket[0] || !channels) {
+        fputs("stored profile has no signal ticket or data channel list\n", stderr);
+        goto out;
+    }
+    engine_client = build_engine_client(game_id, area_id, platform_id, uid, "",
+                                         profile);
+    data = json_object_new_object();
+    channel_list = json_object_new_array();
+    if (!engine_client || !data || !channel_list)
+        goto out;
+    for (index = 0; index < json_object_array_length(channels); index++) {
+        json_object *channel = json_object_array_get_idx(channels, index);
+        json_object *ip = NULL;
+        json_object *port = NULL;
+        json_object *protocol = NULL;
+        json_object *wire = json_object_new_object();
+
+        if (!channel || !wire || !json_object_object_get_ex(channel, "ip", &ip) ||
+            !json_object_object_get_ex(channel, "port", &port) ||
+            !json_object_object_get_ex(channel, "proType", &protocol)) {
+            json_object_put(wire);
+            goto out;
+        }
+        json_object_object_add(wire, "dataChannelIp", json_object_get(ip));
+        json_object_object_add(wire, "port", json_object_get(port));
+        json_object_object_add(wire, "proType", json_object_get(protocol));
+        json_object_array_add(channel_list, wire);
+    }
+    json_object_object_add(data, "engineClient", engine_client);
+    engine_client = NULL;
+    json_object_object_add(data, "list", channel_list);
+    channel_list = NULL;
+    json_object_object_add(data, "signalSt",
+                           json_object_new_string(signal_ticket));
+    status = run_acceleration_operation("signal-login", SIGNAL_LOGIN_ENDPOINT, data,
+                                        DEFAULT_AUTHORIZATION_FILE, session_file,
+                                        key_file);
+
+out:
+    json_object_put(data);
+    json_object_put(channel_list);
+    json_object_put(engine_client);
+    if (owned_detail)
+        json_object_put(owned_detail);
+    cleanse_json_value(profile_response);
+    json_object_put(profile_response);
+    cleanse_json_value(record);
+    json_object_put(record);
+    return status;
+}
+
+static int run_channel_renew(const char *session_file, const char *key_file,
+                             int argument_count, char **arguments)
+{
+    json_object *record = NULL;
+    json_object *profile_response = NULL;
+    json_object *authorization = NULL;
+    json_object *profile;
+    json_object *auth_data;
+    json_object *auth_channels;
+    json_object *engine_client = NULL;
+    json_object *data = NULL;
+    json_object *dto = NULL;
+    json_object *list = NULL;
+    const char *uid = NULL;
+    const char *service_ticket = NULL;
+    const char *signal_session_id;
+    uint64_t game_id;
+    uint64_t area_id;
+    uint64_t platform_id;
+    size_t index;
+    int status = 1;
+
+    if (argument_count != 3 ||
+        parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0 ||
+        parse_unsigned_argument(arguments[1], INT32_MAX, &area_id) != 0 ||
+        parse_unsigned_argument(arguments[2], INT32_MAX, &platform_id) != 0) {
+        fputs("channel-renew accepts GAME_ID AREA_ID PLATFORM_ID\n", stderr);
+        return 2;
+    }
+    if (load_session_record(session_file, &record) != 0 ||
+        session_acceleration_identity(record, &uid, &service_ticket) != 0 ||
+        load_private_json(DEFAULT_PROFILE_FILE, &profile_response) != 0 ||
+        load_private_json(DEFAULT_AUTHORIZATION_FILE, &authorization) != 0) {
+        fputs("channel-renew requires a stored profile and authorization\n", stderr);
+        goto out;
+    }
+    (void)service_ticket;
+    profile = control_data_object(profile_response);
+    auth_data = control_data_object(authorization);
+    auth_channels = object_member(auth_data, "channelAuthList", json_type_array);
+    signal_session_id = string_member(auth_data, "signalSessionId");
+    if (!signal_session_id || !signal_session_id[0] || !auth_channels ||
+        !json_object_is_type(auth_channels, json_type_array) ||
+        !json_object_array_length(auth_channels)) {
+        fputs("stored authorization has no renewable channel list\n", stderr);
+        goto out;
+    }
+    engine_client = build_engine_client(game_id, area_id, platform_id, uid,
+                                         signal_session_id, profile);
+    data = json_object_new_object();
+    dto = json_object_new_object();
+    list = json_object_new_array();
+    if (!engine_client || !data || !dto || !list)
+        goto out;
+    for (index = 0; index < json_object_array_length(auth_channels); index++) {
+        json_object *channel = json_object_array_get_idx(auth_channels, index);
+        json_object *wire = json_object_new_object();
+        const char *names[] = {"channelIp", "dataChannelSessionId", "port",
+                               "proType", "secretType", "type"};
+        size_t name_index;
+
+        if (!channel || !wire)
+            goto out;
+        for (name_index = 0; name_index < sizeof(names) / sizeof(names[0]);
+             name_index++) {
+            json_object *value = NULL;
+
+            if (!json_object_object_get_ex(channel, names[name_index], &value)) {
+                json_object_put(wire);
+                goto out;
+            }
+            json_object_object_add(wire, names[name_index], json_object_get(value));
+        }
+        json_object_array_add(list, wire);
+    }
+    json_object_object_add(dto, "dataChannelList", list);
+    list = NULL;
+    json_object_object_add(data, "engineClient", engine_client);
+    engine_client = NULL;
+    json_object_object_add(data, "channelAuthDTO", dto);
+    dto = NULL;
+    status = run_acceleration_operation("channel-renew", CHANNEL_TICKET_ENDPOINT,
+                                        data, DEFAULT_CHANNEL_TICKET_FILE,
+                                        session_file, key_file);
+
+out:
+    json_object_put(data);
+    json_object_put(dto);
+    json_object_put(list);
+    json_object_put(engine_client);
+    cleanse_json_value(authorization);
+    json_object_put(authorization);
+    cleanse_json_value(profile_response);
+    json_object_put(profile_response);
+    cleanse_json_value(record);
+    json_object_put(record);
+    return status;
+}
+
+static int run_runtime_prepare(int argument_count, char **arguments)
+{
+    json_object *profile_response = NULL;
+    json_object *authorization = NULL;
+    json_object *profile;
+    json_object *auth_data;
+    json_object *auth_channels;
+    json_object *profile_channels;
+    json_object *owned_detail = NULL;
+    json_object *runtime = NULL;
+    json_object *runtime_channels = NULL;
+    const char *signal_session_id;
+    size_t index;
+    int status = 1;
+
+    if (argument_count != 0) {
+        fputs("runtime-prepare takes no arguments\n", stderr);
+        return 2;
+    }
+    (void)arguments;
+    if (load_private_json(DEFAULT_PROFILE_FILE, &profile_response) != 0 ||
+        load_private_json(DEFAULT_AUTHORIZATION_FILE, &authorization) != 0) {
+        fputs("runtime-prepare requires a stored profile and authorization\n",
+              stderr);
+        goto out;
+    }
+    profile = control_data_object(profile_response);
+    auth_data = control_data_object(authorization);
+    auth_channels = object_member(auth_data, "channelAuthList", json_type_array);
+    profile_channels = profile_channel_list(profile, &owned_detail);
+    signal_session_id = string_member(auth_data, "signalSessionId");
+    if (!auth_channels || !json_object_array_length(auth_channels) ||
+        !profile_channels || !signal_session_id || !signal_session_id[0]) {
+        fputs("stored profile or authorization has no usable channel data\n", stderr);
+        goto out;
+    }
+    runtime = json_object_new_object();
+    runtime_channels = json_object_new_array();
+    if (!runtime || !runtime_channels)
+        goto out;
+    json_object_object_add(runtime, "schemaVersion", json_object_new_int(1));
+    json_object_object_add(runtime, "signalSessionId",
+                           json_object_new_string(signal_session_id));
+    for (index = 0; index < json_object_array_length(auth_channels); index++) {
+        json_object *auth_channel = json_object_array_get_idx(auth_channels, index);
+        json_object *profile_channel;
+        json_object *wire;
+        json_object *encryption;
+        json_object *value = NULL;
+        const char *protocol = string_member(auth_channel, "proType");
+        const char *profile_field;
+        const char *names[] = {"channelIp", "port", "dataChannelSessionId",
+                               "channelSt", "secretType"};
+        const char *output_names[] = {"ip", "port", "sessionId", "ticket",
+                                      "secretType"};
+        size_t name_index;
+
+        if (!protocol || (strcasecmp(protocol, "TCP") != 0 &&
+                         strcasecmp(protocol, "UDP") != 0))
+            continue;
+        profile_channel = profile_channel_by_protocol(profile_channels, protocol);
+        wire = json_object_new_object();
+        if (!profile_channel || !wire) {
+            json_object_put(wire);
+            goto out;
+        }
+        json_object_object_add(wire, "protocol",
+                               json_object_new_string(strcasecmp(protocol, "TCP") == 0
+                                                          ? "TCP"
+                                                          : "UDP"));
+        for (name_index = 0; name_index < sizeof(names) / sizeof(names[0]);
+             name_index++) {
+            if (!json_object_object_get_ex(auth_channel, names[name_index], &value)) {
+                json_object_put(wire);
+                goto out;
+            }
+            json_object_object_add(wire, output_names[name_index],
+                                   json_object_get(value));
+        }
+        if (json_object_object_get_ex(auth_channel, "type", &value))
+            json_object_object_add(wire, "type", json_object_get(value));
+        else
+            json_object_object_add(wire, "type", json_object_new_int(0));
+        encryption = object_member(profile_channel, "encryption", json_type_boolean);
+        json_object_object_add(wire, "encrypted",
+                               json_object_new_boolean(encryption &&
+                                                       json_object_get_boolean(encryption)));
+        profile_field = string_member(profile_channel, "bbCliParam");
+        if (profile_field)
+            json_object_object_add(wire, "clientParameter",
+                                   json_object_new_string(profile_field));
+        profile_field = string_member(profile_channel, "bbSrvParam");
+        if (profile_field)
+            json_object_object_add(wire, "serverParameter",
+                                   json_object_new_string(profile_field));
+        profile_field = string_member(profile_channel, "bbstrategy");
+        if (profile_field)
+            json_object_object_add(wire, "strategy",
+                                   json_object_new_string(profile_field));
+        json_object_array_add(runtime_channels, wire);
+    }
+    if (!json_object_array_length(runtime_channels)) {
+        fputs("authorization contains no TCP or UDP channel\n", stderr);
+        goto out;
+    }
+    json_object_object_add(runtime, "channels", runtime_channels);
+    runtime_channels = NULL;
+    if (store_private_json(DEFAULT_RUNTIME_FILE, runtime) != 0) {
+        fprintf(stderr, "unable to store runtime configuration: %s\n",
+                strerror(errno));
+        goto out;
+    }
+    print_acceleration_result_summary("runtime-prepare", runtime,
+                                     DEFAULT_RUNTIME_FILE);
+    status = 0;
+
+out:
+    json_object_put(runtime_channels);
+    json_object_put(runtime);
+    json_object_put(owned_detail);
+    cleanse_json_value(authorization);
+    json_object_put(authorization);
+    cleanse_json_value(profile_response);
+    json_object_put(profile_response);
     return status;
 }
 
@@ -2139,6 +3115,19 @@ static void usage(FILE *stream)
             "  acc-key-import PATH\n"
             "                    Import VERSION|BASE64_DER from a private file\n"
             "  acc-key-status    Print version and fingerprint, never key data\n"
+            "  game-list [PAGE SIZE]\n"
+            "                    Fetch and store the provider game catalog\n"
+            "  game-search KEYWORD [PAGE SIZE]\n"
+            "                    Search and store provider game results\n"
+            "  check-speedup GAME_ID AREA_ID [POLLING]\n"
+            "                    Check account entitlement for a game\n"
+            "  profile-fetch GAME_ID AREA_ID PLATFORM_ID\n"
+            "                    Fetch and store an authorized speedup profile\n"
+            "  signal-login GAME_ID AREA_ID PLATFORM_ID\n"
+            "                    Exchange a profile for channel authorization\n"
+            "  channel-renew GAME_ID AREA_ID PLATFORM_ID\n"
+            "                    Renew stored channel tickets\n"
+            "  runtime-prepare   Materialize an authorized TCP/UDP runtime\n"
             "  self-test         Verify ciphers and private session storage\n"
             "  version           Print the program version\n",
             DEFAULT_DEVICE_ID_FILE, DEFAULT_SESSION_FILE,
@@ -2207,6 +3196,9 @@ int main(int argc, char **argv)
         usage(stderr);
         return 2;
     }
+    if (strcmp(command, "runtime-prepare") == 0) {
+        return run_runtime_prepare(argument_count, arguments);
+    }
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "unable to initialize HTTP client\n");
@@ -2220,6 +3212,36 @@ int main(int argc, char **argv)
     if (resolve_device_identity(explicit_device_id, device_id_file, &device_id) != 0) {
         fprintf(stderr, "unable to load or create the private device identity: %s\n",
                 strerror(errno));
+        goto out;
+    }
+    if (strcmp(command, "game-list") == 0) {
+        status = run_game_list(session_file, acceleration_key_file, argument_count,
+                               arguments);
+        goto out;
+    }
+    if (strcmp(command, "game-search") == 0) {
+        status = run_game_search(session_file, acceleration_key_file, argument_count,
+                                 arguments);
+        goto out;
+    }
+    if (strcmp(command, "check-speedup") == 0) {
+        status = run_check_speedup(session_file, acceleration_key_file,
+                                   argument_count, arguments);
+        goto out;
+    }
+    if (strcmp(command, "profile-fetch") == 0) {
+        status = run_profile_request(session_file, acceleration_key_file,
+                                     argument_count, arguments);
+        goto out;
+    }
+    if (strcmp(command, "signal-login") == 0) {
+        status = run_signal_login(session_file, acceleration_key_file,
+                                  argument_count, arguments);
+        goto out;
+    }
+    if (strcmp(command, "channel-renew") == 0) {
+        status = run_channel_renew(session_file, acceleration_key_file,
+                                   argument_count, arguments);
         goto out;
     }
     payload = build_client_context(device_id);

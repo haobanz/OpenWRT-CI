@@ -28,6 +28,8 @@ class OpenWrtIntegrationTests(unittest.TestCase):
             "biubiu-acc.init",
             "biubiu-acc-manager",
             "biubiu-acc-supervisor",
+            "biubiu-acc-traffic",
+            "biubiu-accd.c",
             "game-catalog.json",
         ):
             self.assertIn(path, makefile)
@@ -47,9 +49,11 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         self.assertNotIn('"/usr/bin/biubiu-accctl *"', acl)
         self.assertNotIn('"/bin/sh *"', acl)
 
-    def test_incomplete_transport_cannot_be_reported_ready(self) -> None:
+    def test_transport_is_gated_by_authorized_runtime(self) -> None:
         manager = (CORE / "files/biubiu-acc-manager").read_text()
         supervisor = (CORE / "files/biubiu-acc-supervisor").read_text()
+        traffic = (CORE / "files/biubiu-acc-traffic").read_text()
+        daemon = (CORE / "src/biubiu-accd.c").read_text()
         ui = (LUCI / "htdocs/luci-static/resources/view/biubiu-acc/main.js").read_text()
         self.assertIn("CONNTRACK_FILE", manager)
         self.assertIn("match-status) match_status", manager)
@@ -58,15 +62,23 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         self.assertIn("getMatchStatus", ui)
         self.assertIn("实时匹配", ui)
         self.assertIn("activeTab === 'acceleration'", ui)
-        self.assertIn("json_add_boolean data_plane_ready 0", manager)
-        self.assertIn("json_add_boolean accelerating 0", manager)
-        self.assertIn("json_add_boolean automatic_matching 0", manager)
-        self.assertIn("transport_incomplete", supervisor)
-        self.assertIn("数据通道尚未实现", ui)
+        self.assertIn("private_json_ready", manager)
+        self.assertIn("acceleration_action", manager)
+        self.assertIn("profile_fetch", manager)
+        self.assertIn("signal_login", manager)
+        self.assertIn("channel_renew", manager)
+        self.assertIn("ready", manager)
+        self.assertIn("accelerating", manager)
+        self.assertNotIn("transport_incomplete", supervisor)
+        self.assertNotIn("数据通道尚未实现", ui)
+        self.assertIn("biubiu-accd", traffic)
+        self.assertIn("nft", traffic)
+        self.assertIn("BOLT_COMMAND_ASSOCIATE_REQUEST", daemon)
+        self.assertIn("--self-test", daemon)
 
     def test_core_self_test_includes_bolt_v3(self) -> None:
         source = (CORE / "src/biubiu-accctl.c").read_text()
-        self.assertIn('#define BIUBIU_ACC_VERSION "0.7.1"', source)
+        self.assertIn('#define BIUBIU_ACC_VERSION "0.8.0"', source)
         self.assertIn("run_bolt_v3_self_test", source)
         self.assertIn('\\"bolt-v3-frame\\"', source)
 

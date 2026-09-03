@@ -6,12 +6,14 @@ STOP=10
 
 CONFIG='biubiu-acc'
 SUPERVISOR='/usr/libexec/biubiu-acc-supervisor'
+TRAFFIC='/usr/libexec/biubiu-acc-traffic'
 
 start_service() {
 	local enabled
 
 	config_load "$CONFIG"
 	config_get_bool enabled main manager_enabled 0
+	config_get_bool accelerating main acceleration_enabled 0
 	[ "$enabled" -eq 1 ] || return 0
 	[ -x "$SUPERVISOR" ] || {
 		logger -t biubiu-acc 'supervisor is not installed'
@@ -24,6 +26,15 @@ start_service() {
 	procd_set_param stderr 1
 	procd_set_param respawn 3600 5 5
 	procd_close_instance
+	if [ "$accelerating" -eq 1 ] && [ -x "$TRAFFIC" ]; then
+		"$TRAFFIC" start >/dev/null 2>&1 ||
+			logger -t biubiu-acc 'saved acceleration could not be restored'
+	fi
+}
+
+stop_service() {
+	[ -x "$TRAFFIC" ] || return 0
+	"$TRAFFIC" stop >/dev/null 2>&1 || true
 }
 
 service_triggers() {

@@ -7,7 +7,7 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods. Version 0.7.1 adds a bounded
+envelope and three user-authorized login methods. Version 0.8.0 adds a bounded
 built-in game catalog, whole-LAN or selected-device scope, and read-only
 conntrack matching diagnostics to the OpenWrt management plane. The verified
 Bolt v3 frame boundary remains covered by the C client's offline self-test. The
@@ -30,7 +30,7 @@ current implementation includes:
 - exact Bolt v3 connect/associate request, response, and 11-byte data-frame
   boundaries with command-specific success checks;
 - a disabled-by-default procd supervisor with explicit, truthful preflight
-  states and no firewall or route mutations;
+  states;
 - a LuCI page for SMS login, session renewal/removal, whole-LAN or DHCP target
   scope, built-in Steam/CS2/Epic selection, optional profile IDs, public-key
   import, process status, self-test, and logs;
@@ -41,7 +41,13 @@ current implementation includes:
   exclusions, and broad generic web and Epic port ranges are not automatic
   match hints;
 - a mode `0600` one-shot request boundary so the LuCI SMS code is read by the C
-  client on stdin instead of appearing in a process argument.
+  client on stdin instead of appearing in a process argument;
+- live ADAT control operations for game catalog, search, entitlement, profile,
+  signal authorization, and channel-ticket renewal;
+- root-private runtime materialization for authorized TCP and UDP Bolt
+  channels, plus a native Bolt v3 transparent transport daemon;
+- nftables TPROXY steering for the whole LAN or one selected IPv4 device, with
+  a transactional OpenClash exclusive-mode stop/restore path.
 
 The QR exchange, a user-authorized SMS exchange, and session refresh were
 verified against the production service on 2026-09-03. Password endpoint
@@ -51,9 +57,13 @@ atomically without printing its credentials. The acceleration codec and key
 cache and Bolt codec are validated offline with generated or synthetic values;
 they do not embed the app's protected bootstrap value and do not contact the
 acceleration service during tests. Both `biubiu-acc` and
-`luci-app-biubiu-acc` are preinstalled in the NN6000 firmware. Transport
-acceleration is still not implemented, so the UI cannot start acceleration and
-the package does not modify nftables or route traffic.
+`luci-app-biubiu-acc` are preinstalled in the NN6000 firmware. The 0.8.0
+package can start the native TCP/UDP data path only after the account, ADAT
+key, provider profile, channel authorization, and runtime file are all
+present. It refuses to start when any prerequisite is missing. The Bolt
+extension values are retained as opaque provider parameters; the
+endpoint/parameter mapping is an interoperability hypothesis until a live,
+owner-authorized channel has completed a handshake.
 
 ## Usage
 
@@ -107,7 +117,8 @@ Fresh installs default to whole-LAN scope with the Steam, Counter-Strike 2,
 and Epic Games catalog entries selected. Selecting a DHCP device switches the
 scope to that device. Upgrades from version 0.6.0 migrate once to this layout;
 later user choices, including an empty selection, are preserved. These values
-remain inert until the control and data planes are completed.
+remain inert until a profile and channel authorization have been obtained
+through the service controls.
 
 The acceleration bootstrap is deliberately external. Prepare a root-owned,
 mode `0600` file containing the provider-compatible value in the exact form
@@ -129,5 +140,28 @@ Run the local cipher check with:
 biubiu-accctl self-test
 ```
 
-See [docs/protocol.md](docs/protocol.md) for the observed state machine and
-the remaining data-plane work.
+After importing the acceleration key and logging in, the control-plane sequence
+is:
+
+```sh
+biubiu-accctl game-list
+biubiu-accctl check-speedup GAME_ID AREA_ID
+biubiu-accctl profile-fetch GAME_ID AREA_ID PLATFORM_ID
+biubiu-accctl signal-login GAME_ID AREA_ID PLATFORM_ID
+biubiu-accctl runtime-prepare
+```
+
+`channel-renew` repeats the channel authorization step when the provider ticket
+is near expiry. The LuCI page exposes the same sequence and acceleration
+start/stop actions. Starting acceleration installs only the built-in bounded
+Steam/CS2 destination-port hints; Epic Games remains visible in the catalog
+but is not guessed with broad ports.
+
+The traffic engine is root-only and listens on transparent ports `18080` (TCP)
+and `18081` (UDP). It uses policy table `107` and mark `0x6d`, and removes both
+on stop or startup failure. When OpenClash is running, the default exclusive
+policy stops it before installing the rules and restores it after acceleration
+stops.
+
+See [docs/protocol.md](docs/protocol.md) for the observed state machine,
+transport boundary, and live-verification limits.

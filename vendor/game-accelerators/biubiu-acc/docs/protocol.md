@@ -235,36 +235,53 @@ This supports a router-native design: select a LAN IP, obtain an authorized
 profile, then intercept only that client's game routes. It does not require a
 Windows process scanner on the accelerated machine.
 
-## OpenWrt management boundary
+## OpenWrt management and data-plane boundary
 
-Version 0.7.1 extends the procd/LuCI management plane with a whole-LAN or
+Version 0.8.0 extends the procd/LuCI management plane with a whole-LAN or
 selected-device scope, a machine-readable Steam, Counter-Strike 2/CSGO, and
-Epic Games catalog, and a read-only conntrack matching view. Raw
-game/area/platform identifiers remain available only as advanced overrides.
-Account credentials remain in root-only state files;
-LuCI sends SMS codes through a mode `0600` one-shot request and the C client
-reads the code from stdin. UCI contains only scope, game selections, an
-optional LAN device, advanced identifiers, and log level.
+Epic Games catalog, read-only conntrack observation, and explicit controls for
+the provider's game list, entitlement, profile, signal-login, and channel-ticket
+endpoints. Raw game/area/platform identifiers remain in advanced settings.
+Account credentials, provider responses, channel tickets, and the normalized
+runtime are root-owned mode `0600` files; UCI contains only selection and
+non-secret operating policy.
 
-The supervisor evaluates local account, target, and acceleration-key state. The
-matching command reads only IPv4 tuple/counter lines from
-/proc/net/nf_conntrack, using bounded built-in Steam/CS2 destination-port hints.
-It is diagnostic output, not a steering decision. The supervisor always reports
-`accelerating=false` and never creates a TUN device, nftables rule, policy
-route, or data-channel socket. This keeps management work testable while
-preventing an incomplete implementation from silently disrupting the router.
+The manager materializes `/etc/biubiu-acc/runtime.json` only after a profile and
+channel authorization are present. `biubiu-accd` loads that file as root,
+connects to the authorized TCP/UDP channel endpoints, performs the observed
+Bolt v3 connect/associate handshake, and forwards packets using the fixed data
+frame. It exposes transparent listeners on TCP `18080` and UDP `18081` and
+rejects an absent, symlinked, foreign-owned, or broadly readable runtime file.
 
-## Remaining milestones
+`biubiu-acc-traffic` installs an `inet biubiu_acc` nftables prerouting chain,
+mark `0x6d`, and policy route table `107`. The current built-in high-confidence
+rules cover Steam/CS2 destination ports and can be scoped to `br-lan` or one
+IPv4 source device. Activation is transactional: a failed route, nftables, or
+engine step removes the changes. OpenClash uses an explicit exclusive policy;
+if its process is found, the helper stops it before activation and restores it
+when acceleration stops. It never changes OpenClash configuration files.
 
-1. Implement and runtime-verify game list, game profile, entitlement check, and
-   node selection.
-2. Runtime-verify heartbeat cadence, channel renewal, and service error behavior.
-3. Implement the smallest compatible data channel, initially TCP and UDP,
-   against user-authorized test sessions.
-4. Add transactional nftables/TUN steering for either the selected LAN IPv4
-   address or high-confidence game flows from the full LAN scope.
-5. Extend the completed procd/LuCI management foundation with traffic counters,
-   proxy conflict checks, transactional activation, and rollback.
+The supervisor and LuCI read the real engine state. They distinguish
+`profile_required`, `channel_required`, `runtime_required`, `ready`,
+`accelerating`, and `traffic_error`; no state is reported as accelerated before
+the engine process and steering rules are active. `match-status` remains a
+diagnostic conntrack view and is not used to guess provider routes.
+
+## Live verification limits
+
+The complete control and transport path is implemented and covered by offline
+codec/storage tests, but the provider-specific opaque Bolt extension parameters
+and encrypted payload semantics cannot be proven without a live channel created
+for an account authorized by its owner. The following checks remain required
+for a production claim:
+
+1. Run the control sequence with a valid external ADAT public key and confirm
+   the provider returns a usable profile and channel authorization.
+2. Confirm a TCP connect and UDP associate handshake, then verify payload
+   round-trips against an authorized game endpoint.
+3. Confirm ticket expiry/renewal and heartbeat behavior during a long session.
+4. Expand route selectors from the provider profile only after their semantics
+   are observed; broad Epic or generic web ports are intentionally not guessed.
 
 The transport layer is not assumed to be ordinary HTTP, SOCKS, or a standard
 VPN. Known names such as Bolt, KCP, UOT, and FEC are treated only as clues

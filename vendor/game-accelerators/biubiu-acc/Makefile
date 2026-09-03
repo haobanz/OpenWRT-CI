@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.7.1
+PKG_VERSION:=0.8.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -15,15 +15,15 @@ define Package/biubiu-acc
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Experimental clean-room biubiu accelerator client
-  DEPENDS:=+ca-bundle +jshn +jsonfilter +libcurl +libjson-c +libopenssl +uci
+  DEPENDS:=+ca-bundle +ip-full +jshn +jsonfilter +kmod-nft-tproxy +libcurl +libjson-c +libopenssl +nftables +uci
   URL:=https://www.biubiu001.com/
 endef
 
 define Package/biubiu-acc/description
   An independently implemented OpenWrt client for user-authorized biubiu
-  sessions. The current milestone implements verified account login, private
-  session state, a management supervisor, and the independently observed ADAT
-  and Bolt v3 codecs. The traffic transport remains in development.
+  sessions. It includes the ADAT control client, profile and channel-ticket
+  storage, a Bolt v3 TCP/UDP transparent transport, and transactional traffic
+  steering with an explicit OpenClash conflict policy.
 endef
 
 define Package/biubiu-acc/conffiles
@@ -33,6 +33,7 @@ endef
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) ./src/biubiu-accctl.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/biubiu-accd.c $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
@@ -41,11 +42,17 @@ define Build/Compile
 		-o $(PKG_BUILD_DIR)/biubiu-accctl \
 		$(PKG_BUILD_DIR)/biubiu-accctl.c \
 		$(TARGET_LDFLAGS) -lcurl -ljson-c -lcrypto
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
+		-std=c11 -Wall -Wextra -Wformat=2 -pthread \
+		-o $(PKG_BUILD_DIR)/biubiu-accd \
+		$(PKG_BUILD_DIR)/biubiu-accd.c \
+		$(TARGET_LDFLAGS) -ljson-c -lcrypto -pthread
 endef
 
 define Package/biubiu-acc/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/biubiu-accctl $(1)/usr/bin/biubiu-accctl
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/biubiu-accd $(1)/usr/bin/biubiu-accd
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/biubiu-acc.config $(1)/etc/config/biubiu-acc
 	$(INSTALL_DIR) $(1)/etc/init.d
@@ -53,6 +60,7 @@ define Package/biubiu-acc/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/biubiu-acc-manager $(1)/usr/libexec/biubiu-acc-manager
 	$(INSTALL_BIN) ./files/biubiu-acc-supervisor $(1)/usr/libexec/biubiu-acc-supervisor
+	$(INSTALL_BIN) ./files/biubiu-acc-traffic $(1)/usr/libexec/biubiu-acc-traffic
 	$(INSTALL_DIR) $(1)/usr/share/biubiu-acc
 	$(INSTALL_DATA) ./files/game-catalog.json \
 		$(1)/usr/share/biubiu-acc/game-catalog.json
@@ -78,6 +86,11 @@ define Package/biubiu-acc/postinst
 		uci -q set biubiu-acc.main.schema_version=2
 		uci -q commit biubiu-acc
 	fi
+	[ -n "$$(uci -q get biubiu-acc.main.openclash_mode)" ] || \
+		uci -q set biubiu-acc.main.openclash_mode=exclusive
+	[ -n "$$(uci -q get biubiu-acc.main.acceleration_enabled)" ] || \
+		uci -q set biubiu-acc.main.acceleration_enabled=0
+	uci -q commit biubiu-acc
 	/etc/init.d/biubiu-acc enable >/dev/null 2>&1 || true
 }
 exit 0

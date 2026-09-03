@@ -1,3 +1,9 @@
 /etc/biubiu-acc/device-id
 /etc/biubiu-acc/session.json
 /etc/biubiu-acc/acceleration-key.json
+/etc/biubiu-acc/game-list.json
+/etc/biubiu-acc/entitlement.json
+/etc/biubiu-acc/profile.json
+/etc/biubiu-acc/authorization.json
+/etc/biubiu-acc/channel-ticket.json
+/etc/biubiu-acc/runtime.json

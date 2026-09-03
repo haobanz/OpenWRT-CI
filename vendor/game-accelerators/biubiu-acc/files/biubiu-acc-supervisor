@@ -5,6 +5,7 @@
 
 CONFIG='biubiu-acc'
 CLI='/usr/bin/biubiu-accctl'
+TRAFFIC='/usr/libexec/biubiu-acc-traffic'
 RUNTIME_ROOT='/tmp/biubiu-acc'
 STATE_FILE="$RUNTIME_ROOT/status.json"
 INTERVAL=15
@@ -20,6 +21,14 @@ bool_value() {
 	case "$1" in 1|true|yes|on) printf '1\n' ;; *) printf '0\n' ;; esac
 }
 
+private_json_ready() {
+	local path="$1" owner mode
+	[ -f "$path" ] && [ ! -L "$path" ] || return 1
+	owner="$(stat -c '%u' "$path" 2>/dev/null || printf 'invalid')"
+	mode="$(stat -c '%a' "$path" 2>/dev/null || printf 'invalid')"
+	[ "$owner" = 0 ] && [ "$mode" = 600 ]
+}
+
 print_selected_game() {
 	case "$1" in ''|-*|*-|*[!a-z0-9-]*) return 0 ;; esac
 	printf '%s\n' "$1"
@@ -27,26 +36,31 @@ print_selected_game() {
 
 write_state() {
 	local phase="$1" message="$2" session_json="$3" key_json="$4"
-	local scope="$5" selected_game_count="$6"
-	local authenticated key_cached target_ip target_name temp
+	local scope="$5" selected_game_count="$6" traffic_json="$7"
+	local traffic_active="$8" traffic_pid="$9" traffic_message="${10}" temp
+	local authenticated key_cached target_ip target_name acceleration_enabled
 
 	authenticated="$(json_field "$session_json" authenticated)"
 	key_cached="$(json_field "$key_json" cached)"
 	config_load "$CONFIG"
 	config_get target_ip main target_ip ''
 	config_get target_name main target_name ''
+	config_get acceleration_enabled main acceleration_enabled '0'
 	temp="$STATE_FILE.$$"
 
 	json_init
 	json_add_string phase "$phase"
 	json_add_string message "$message"
-	json_add_boolean accelerating 0
+	json_add_boolean accelerating "$(bool_value "$traffic_active")"
+	json_add_boolean acceleration_enabled "$(bool_value "$acceleration_enabled")"
 	json_add_boolean authenticated "$(bool_value "$authenticated")"
 	json_add_boolean acceleration_key_cached "$(bool_value "$key_cached")"
 	json_add_string scope "$scope"
 	json_add_int selected_game_count "$selected_game_count"
 	json_add_string target_ip "$target_ip"
 	json_add_string target_name "$target_name"
+	json_add_int traffic_pid "$traffic_pid"
+	json_add_string traffic_message "$traffic_message"
 	json_add_int pid "$$"
 	json_add_int updated_at "$(date +%s)"
 	json_dump > "$temp"
@@ -71,8 +85,13 @@ chmod 0700 "$RUNTIME_ROOT"
 while :; do
 	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false}')"
 	key_json="$($CLI acc-key-status 2>/dev/null || printf '{"cached":false}')"
+	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
 	authenticated="$(json_field "$session_json" authenticated)"
 	key_cached="$(json_field "$key_json" cached)"
+	traffic_active="$(json_field "$traffic_json" accelerating)"
+	traffic_pid="$(json_field "$traffic_json" pid)"
+	traffic_message="$(json_field "$traffic_json" message)"
+	case "$traffic_pid" in ''|*[!0-9]*) traffic_pid=0 ;; esac
 	config_load "$CONFIG"
 	config_get scope main scope 'lan'
 	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
@@ -80,6 +99,13 @@ while :; do
 	selected_game_count="$(printf '%s\n' "$selected_games" | awk 'NF { count++ } END { print count + 0 }')"
 	config_get target_ip main target_ip ''
 	config_get target_id main target_id ''
+	config_get acceleration_enabled main acceleration_enabled '0'
+	profile_cached=0
+	authorization_cached=0
+	runtime_cached=0
+	private_json_ready /etc/biubiu-acc/profile.json && profile_cached=1
+	private_json_ready /etc/biubiu-acc/authorization.json && authorization_cached=1
+	private_json_ready /etc/biubiu-acc/runtime.json && runtime_cached=1
 
 	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
 		phase='account_required'
@@ -93,13 +119,29 @@ while :; do
 	elif [ "$(bool_value "$key_cached")" -ne 1 ]; then
 		phase='key_required'
 		message='加速业务公钥尚未配置'
+	elif [ "$profile_cached" -ne 1 ]; then
+		phase='profile_required'
+		message='尚未获取节点配置'
+	elif [ "$authorization_cached" -ne 1 ]; then
+		phase='channel_required'
+		message='数据通道尚未授权'
+	elif [ "$runtime_cached" -ne 1 ]; then
+		phase='runtime_required'
+		message='运行时通道配置尚未生成'
+	elif [ "$(bool_value "$traffic_active")" -eq 1 ]; then
+		phase='accelerating'
+		message='数据通道运行中，已接管所选游戏流量'
+	elif [ "$(bool_value "$acceleration_enabled")" -eq 1 ]; then
+		phase='traffic_error'
+		message="${traffic_message:-数据通道未运行，请查看 engine.log}"
 	else
-		phase='transport_incomplete'
-		message='数据通道尚未完成，不会接管流量'
+		phase='ready'
+		message='授权通道已准备，可以启动流量接管'
 	fi
 
 	write_state "$phase" "$message" "$session_json" "$key_json" \
-		"$scope" "$selected_game_count"
+		"$scope" "$selected_game_count" "$traffic_json" "$traffic_active" \
+		"$traffic_pid" "$traffic_message"
 	if [ "$phase" != "$LAST_PHASE" ]; then
 		logger -t biubiu-acc "state changed to $phase"
 		LAST_PHASE="$phase"

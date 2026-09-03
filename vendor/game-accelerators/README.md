@@ -29,7 +29,7 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.7.1 includes the completed QR, phone SMS, hidden password, and session-refresh
+- Version 0.8.0 includes the completed QR, phone SMS, hidden password, and session-refresh
   account paths in the OpenWrt C client. Device identity and account sessions
   use private persistent files, successful login output is redacted, and refresh
   replaces a session atomically. It also includes an offline-tested codec for
@@ -44,9 +44,15 @@ same time.
   disabled-by-default supervisor reports account, scope, game, key, process,
   and matching state but cannot claim acceleration. Settings are staged without
   changing nftables or routes.
-- The C self-test now includes the independently verified Bolt v3 request,
-  response, and 11-byte data frame boundary. Control API calls, live channels,
-  and transport steering remain incomplete.
+- The C self-test includes the independently verified Bolt v3 request, response,
+  and 11-byte data frame boundary. The manager now exposes ADAT game-list,
+  entitlement, profile, signal-login, and channel-renew operations, then
+  materializes an authorized root-private runtime file for the native TCP/UDP
+  Bolt transport. The traffic helper installs bounded Steam/CS2 TPROXY rules
+  for the whole LAN or one selected device and stops/restores OpenClash under
+  the explicit exclusive policy. The provider-specific opaque extension
+  mapping still requires an owner-authorized live channel smoke test before it
+  can be called production-verified.
 - Protocol facts, open questions, and the clean-room boundary are documented
   in `biubiu-acc/docs/protocol.md`.
 

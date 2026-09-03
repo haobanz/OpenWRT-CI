@@ -89,8 +89,8 @@ uses the official Steamworks port hints and explicitly excludes content/CDN
 domains; Epic Games remains provider-profile-only because its official port
 list is too broad for safe automatic matching. The model is network-free and
 does not install firewall rules or claim that traffic is accelerated. The
-OpenWrt package currently stores the plan as management state while the
-provider data-plane handoff remains incomplete.
+OpenWrt package consumes the selected hints through its root-only nftables
+TPROXY helper after a provider-authorized runtime is prepared.
 
 `biubiu_heartbeat_model.py` models the direct signal heartbeat without opening
 a socket. It builds the observed inner payload, `x-biu-client` header and outer
