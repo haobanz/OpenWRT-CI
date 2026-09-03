@@ -202,3 +202,45 @@ depends on Android system libraries. It is therefore an interoperability
 reference only and is neither vendored nor redistributed. The router-native
 implementation requires a clean Linux TUN adapter and an independently
 implemented, runtime-verified data channel.
+
+## Observed Bolt v3 frame boundary
+
+Focused static analysis of the packet engine establishes a shared, big-endian
+frame prefix. Offsets are from the beginning of a frame:
+
+```text
+0      u8   protocol version in the low nibble (3)
+1      u8   header length
+2      u16  total frame length
+4      u8   command
+```
+
+The observed connect and associate requests continue with a 32-bit signal
+session value and an 8-bit extension count. Their fixed header is therefore 10
+bytes. Each extension is encoded as an 8-bit type, an 8-bit length, and exactly
+that many value bytes. The request builder emits endpoint-shaped six-byte
+values for types 1, 2, and 7, a one-byte value for type 5, and variable opaque
+values for types 6, 9, and 10. Endpoint values contain four IPv4 bytes followed
+by a big-endian port.
+
+The observed response reader instead consumes a 32-bit session value and a
+16-bit connection value. Commands that carry a result then add one result byte
+before the extension count. A result value of `0x22` enters the success path
+for both connect and associate responses. The verified command values are:
+
+```text
+0x11  associated data
+0x22  connect request
+0x23  connect response
+0x24  UDP associate request
+0x25  UDP associate response
+0x26  close/abort path
+0x27  error response
+```
+
+Header length separates extension metadata from an optional payload; total
+length bounds the complete frame. The offline model validates both lengths and
+rejects truncated or surplus extension bytes. It intentionally does not assign
+business meaning to opaque extension types, generate channel authorization, or
+open a socket. Runtime confirmation against an owner-authorized session remains
+required before this codec can become a transport implementation.

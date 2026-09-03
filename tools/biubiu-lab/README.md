@@ -67,6 +67,12 @@ the TCP, UDP, and ICMP Bolt channel descriptors. Signal tickets and opaque
 channel parameters are excluded from object representations so test failures
 cannot print them. This parser does not implement or contact the data channel.
 
+`biubiu_bolt_model.py` models the independently observed Bolt v3 frame
+boundary. It encodes connect/associate request headers, parses synthetic
+response headers, and preserves typed length-value extensions and payloads.
+All integers use the verified network byte order. Opaque values and payloads
+are excluded from representations, and the module has no networking code.
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
