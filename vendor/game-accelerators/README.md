@@ -29,16 +29,20 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.5.0 completes the QR, phone SMS, hidden password, and session-refresh
+- Version 0.6.0 completes the QR, phone SMS, hidden password, and session-refresh
   account paths in the OpenWrt C client. Device identity and account sessions
   use private persistent files, successful login output is redacted, and refresh
   replaces a session atomically. It also includes an offline-tested codec for
   the acceleration API's separate key/IV ADAT envelope. An external
   `version|base64(X.509 DER)` public key can be validated and cached in a
   root-only file without embedding the app's protected bootstrap value.
-- The CLI is preinstalled in the firmware and also published as a standalone
-  APK. It has no init service and remains inert until game profile, node
-  selection, and transport steering have all passed router tests.
+- The CLI and LuCI management page are preinstalled and also published as
+  standalone APKs. The disabled-by-default supervisor reports account, target,
+  key, and process state but cannot claim acceleration. Device/profile settings
+  are staged without changing nftables or routes.
+- The C self-test now includes the independently verified Bolt v3 request,
+  response, and 11-byte data frame boundary. Control API calls, live channels,
+  and transport steering remain incomplete.
 - Protocol facts, open questions, and the clean-room boundary are documented
   in `biubiu-acc/docs/protocol.md`.
 

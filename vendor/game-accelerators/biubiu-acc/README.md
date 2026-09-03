@@ -7,9 +7,9 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods. Version 0.5.0 also adds an
-independent, offline-tested codec for the acceleration API's separate ADAT
-envelope and private OpenWrt session persistence:
+envelope and three user-authorized login methods. Version 0.6.0 adds the first
+OpenWrt management plane and moves the verified Bolt v3 frame boundary into
+the C client's offline self-test. The current implementation includes:
 
 - one ephemeral 16-byte value used as the account AES key and IV;
 - service-specific padding used by the public login API;
@@ -25,17 +25,26 @@ envelope and private OpenWrt session persistence:
 - rejection of symlinked, foreign-owned, or group/world-accessible state files.
 - external acceleration RSA public-key validation, private caching, and
   redacted version/fingerprint status.
+- exact Bolt v3 connect/associate request, response, and 11-byte data-frame
+  boundaries with command-specific success checks;
+- a disabled-by-default procd supervisor with explicit, truthful preflight
+  states and no firewall or route mutations;
+- a LuCI page for SMS login, session renewal/removal, DHCP target selection,
+  profile IDs, public-key import, process status, self-test, and logs;
+- a mode `0600` one-shot request boundary so the LuCI SMS code is read by the C
+  client on stdin instead of appearing in a process argument.
 
 The QR exchange, a user-authorized SMS exchange, and session refresh were
 verified against the production service on 2026-09-03. Password endpoint
 validation used deliberately invalid credentials; no password was retained.
 Both the reference lab and OpenWrt C clients persist and refresh a session
 atomically without printing its credentials. The acceleration codec and key
-cache are validated offline with generated RSA keys; they do not embed the
-app's protected bootstrap value and do not contact the acceleration service
-during tests. Transport acceleration is not implemented in this milestone, so
-the package is built as an installable test artifact and is not installed in
-the firmware image yet.
+cache and Bolt codec are validated offline with generated or synthetic values;
+they do not embed the app's protected bootstrap value and do not contact the
+acceleration service during tests. Both `biubiu-acc` and
+`luci-app-biubiu-acc` are preinstalled in the NN6000 firmware. Transport
+acceleration is still not implemented, so the UI cannot start acceleration and
+the package does not modify nftables or route traffic.
 
 ## Usage
 
@@ -47,6 +56,9 @@ them. For SMS login:
 ```sh
 biubiu-accctl sms-send 13800000000 86
 biubiu-accctl sms-login 13800000000 123456 86
+read -r BIUBIU_SMS_CODE
+printf '%s\n' "$BIUBIU_SMS_CODE" | biubiu-accctl sms-login-stdin 13800000000 86
+unset BIUBIU_SMS_CODE
 ```
 
 For QR login:
@@ -74,11 +86,13 @@ Inspect or renew the local login without exposing its values:
 ```sh
 biubiu-accctl session-status
 biubiu-accctl session-refresh
+biubiu-accctl session-clear
 ```
 
 `--device-id-file` and `--session-file` can override the two default absolute
-paths for testing. The future LuCI flow will call these commands and will never
-place credentials in UCI.
+paths for testing. The LuCI flow never places account credentials in UCI.
+Its entry is `Services -> biubiu accelerator`; the management supervisor is
+off by default and only evaluates local preflight state.
 
 The acceleration bootstrap is deliberately external. Prepare a root-owned,
 mode `0600` file containing the provider-compatible value in the exact form

@@ -37,9 +37,10 @@ CONFIG_PACKAGE_luci-app-uugamebooster=y
 CONFIG_PACKAGE_leigod-acc=y
 CONFIG_PACKAGE_luci-app-leigod-acc=y
 CONFIG_PACKAGE_luci-i18n-leigod-acc-zh-cn=y
-# Clean-room biubiu client. Preinstall the inert CLI for development; it has no
-# init service and does not steer traffic until the transport is completed.
+# Clean-room biubiu client and management UI. The control supervisor remains
+# disabled by default and the incomplete data plane cannot take over traffic.
 CONFIG_PACKAGE_biubiu-acc=y
+CONFIG_PACKAGE_luci-app-biubiu-acc=y
 CONFIG_PACKAGE_luci-app-upnp=y
 CONFIG_PACKAGE_miniupnpd-nftables=y
 CONFIG_PACKAGE_iptables-nft=y

@@ -1,0 +1,230 @@
+.bba-page {
+	--bba-border: var(--border-color-medium, #d9dee5);
+	--bba-muted: var(--text-color-secondary, #667085);
+	--bba-panel: var(--background-color-high, rgba(127, 127, 127, .045));
+	--bba-green: #16813d;
+	--bba-cyan: #087f8c;
+	--bba-amber: #a65f00;
+	--bba-red: #b42318;
+	min-width: 0;
+}
+
+.bba-head,
+.bba-actions,
+.bba-statusline,
+.bba-inline {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.bba-head {
+	justify-content: space-between;
+	margin: 0 0 14px;
+}
+
+.bba-head h2,
+.bba-section-head h3 {
+	margin: 0;
+	letter-spacing: 0;
+}
+
+.bba-head h2 {
+	font-size: 24px;
+}
+
+.bba-version,
+.bba-muted {
+	color: var(--bba-muted);
+	font-size: 12px;
+}
+
+.bba-tabs {
+	display: flex;
+	gap: 2px;
+	padding: 3px;
+	border: 1px solid var(--bba-border);
+	background: var(--bba-panel);
+	overflow-x: auto;
+	margin-bottom: 18px;
+}
+
+.bba-tab {
+	border: 0;
+	background: transparent;
+	padding: 8px 14px;
+	min-height: 36px;
+	white-space: nowrap;
+	cursor: pointer;
+	color: inherit;
+}
+
+.bba-tab.active {
+	background: var(--background-color-high, #fff);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+	font-weight: 600;
+}
+
+.bba-stat-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(145px, 1fr));
+	gap: 10px;
+	margin-bottom: 18px;
+}
+
+.bba-stat {
+	border: 1px solid var(--bba-border);
+	border-radius: 6px;
+	padding: 13px 14px;
+	min-width: 0;
+	background: var(--bba-panel);
+}
+
+.bba-stat strong {
+	display: block;
+	font-size: 19px;
+	line-height: 1.25;
+	margin-top: 5px;
+	overflow-wrap: anywhere;
+}
+
+.bba-section {
+	border-top: 1px solid var(--bba-border);
+	padding: 16px 0 8px;
+}
+
+.bba-section:first-child {
+	border-top: 0;
+	padding-top: 0;
+}
+
+.bba-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+}
+
+.bba-callout {
+	border-left: 3px solid var(--bba-amber);
+	background: rgba(190, 120, 0, .08);
+	padding: 11px 13px;
+	line-height: 1.5;
+	margin-bottom: 16px;
+}
+
+.bba-table-wrap {
+	overflow-x: auto;
+	border: 1px solid var(--bba-border);
+}
+
+.bba-table {
+	width: 100%;
+	border-collapse: collapse;
+	min-width: 680px;
+}
+
+.bba-table th,
+.bba-table td {
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--bba-border);
+	text-align: left;
+	vertical-align: middle;
+	letter-spacing: 0;
+}
+
+.bba-table tr:last-child td {
+	border-bottom: 0;
+}
+
+.bba-table th {
+	font-size: 12px;
+	color: var(--bba-muted);
+	background: var(--bba-panel);
+	white-space: nowrap;
+}
+
+.bba-code {
+	font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+
+.bba-badge {
+	display: inline-flex;
+	align-items: center;
+	min-height: 24px;
+	padding: 2px 8px;
+	border: 1px solid currentColor;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.bba-ok { color: var(--bba-green); }
+.bba-info { color: var(--bba-cyan); }
+.bba-warn { color: var(--bba-amber); }
+.bba-error { color: var(--bba-red); }
+.bba-idle { color: var(--bba-muted); }
+
+.bba-form {
+	display: grid;
+	grid-template-columns: minmax(120px, 170px) minmax(220px, 1fr);
+	gap: 12px 16px;
+	align-items: center;
+	width: min(720px, 100%);
+}
+
+.bba-form label {
+	font-weight: 600;
+	min-width: 0;
+}
+
+.bba-form input,
+.bba-form select,
+.bba-form textarea {
+	width: 100%;
+	min-height: 38px;
+	box-sizing: border-box;
+}
+
+.bba-form textarea {
+	min-height: 130px;
+	resize: vertical;
+	font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+	font-size: 12px;
+}
+
+.bba-empty {
+	padding: 34px 18px;
+	text-align: center;
+	color: var(--bba-muted);
+	border: 1px dashed var(--bba-border);
+}
+
+.bba-log {
+	width: 100%;
+	height: 420px;
+	box-sizing: border-box;
+	resize: vertical;
+	font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre;
+	overflow: auto;
+}
+
+@media (max-width: 900px) {
+	.bba-stat-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+}
+
+@media (max-width: 600px) {
+	.bba-head h2 { font-size: 21px; }
+	.bba-stat-grid { grid-template-columns: 1fr 1fr; }
+	.bba-form { grid-template-columns: 1fr; }
+	.bba-form label { margin-bottom: -7px; }
+	.bba-actions { width: 100%; }
+	.bba-actions .cbi-button { flex: 1 1 auto; }
+}

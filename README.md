@@ -15,14 +15,14 @@
 - PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
 - cloudflared 与自维护的多账号 Cloudflare Tunnel LuCI 管理页
 - 网易 UU 和雷神游戏加速器 LuCI 管理页
-- 预装实验性的 `biubiu-acc` CLI（登录、私有会话存储及安全续期已实现）
+- 预装实验性的 `biubiu-acc` 与 LuCI 管理页（登录、设备选择和预检已实现）
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
 
 Release 同时提供设备固件、与当前内核匹配的 DAED/dae APK、Agent Hub 的
 五个 APK、Cloudflare Tunnel 的三个 APK、两套现有游戏加速器的四个 APK
-（含雷神中文语言包），以及实验性的 `biubiu-acc` APK。其他设备只有
+（含雷神中文语言包），以及实验性的 `biubiu-acc` 与 LuCI APK。其他设备只有
 在确认具备 BPF、XDP、内核 BTF 支持并加入独立配置后才会增加，不会直接套用
 原仓库的通用配置。
 
@@ -71,9 +71,11 @@ HTTP 端点，因此自维护包对已审核的文件强制固定 SHA-256，校�
 并验证了手机短信验证码登录与会话安全续期；隐藏密码登录接口也已实现。加速业务
 使用另一套独立 key/IV 的 ADAT 信封，当前已完成离线编解码和密钥轮换状态测试，
 但不内置应用保护区中的引导公钥。OpenWrt C 客户端会将稳定设备 ID 和登录会话
-保存到 root 私有文件，通过原子替换完成续期，并仅输出脱敏状态。固件预装该
-CLI，Release 同时提供独立 APK；当前没有 init 服务或 LuCI 管理页，数据通道和
-指定 LAN 设备路由验证完成前默认不运行，也不会接管流量。
+保存到 root 私有文件，通过原子替换完成续期，并仅输出脱敏状态。0.6.0 增加
+`服务 -> biubiu 加速器` 管理页，可完成短信登录、会话续期、DHCP 设备选择、
+游戏/区服/平台 ID 配置、公钥导入、自检和日志查看；管理进程默认关闭。Bolt v3
+帧边界已进入 C 客户端离线自检，但控制 API、实际数据通道和 nftables 接管尚未
+完成，因此页面不会伪装成已加速，也不会修改设备流量。
 
 ## Agent Hub
 

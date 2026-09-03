@@ -50,7 +50,7 @@ done
 
 # Keep the integration wrappers in-tree while leaving proprietary vendor
 # executables out of the repository and firmware image.
-for package_name in biubiu-acc leigod-acc luci-app-leigod-acc luci-app-uugamebooster; do
+for package_name in biubiu-acc luci-app-biubiu-acc leigod-acc luci-app-leigod-acc luci-app-uugamebooster; do
 	if [[ ! -d "$GAME_ACCEL_DIR/$package_name" ]]; then
 		echo "Missing vendored package: $GAME_ACCEL_DIR/$package_name" >&2
 		exit 1

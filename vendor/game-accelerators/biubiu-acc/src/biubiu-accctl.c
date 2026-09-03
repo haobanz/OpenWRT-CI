@@ -20,13 +20,23 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.5.0"
+#define BIUBIU_ACC_VERSION "0.6.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
 #define MAX_STATE_SIZE (1024U * 1024U)
 #define DEFAULT_DEVICE_ID_FILE "/etc/biubiu-acc/device-id"
 #define DEFAULT_SESSION_FILE "/etc/biubiu-acc/session.json"
 #define DEFAULT_ACCELERATION_KEY_FILE "/etc/biubiu-acc/acceleration-key.json"
+
+#define BOLT_PROTOCOL_VERSION 3U
+#define BOLT_DATA_HEADER_LENGTH 11U
+#define BOLT_COMMAND_DATA 0x11U
+#define BOLT_COMMAND_CONNECT_REQUEST 0x22U
+#define BOLT_COMMAND_CONNECT_RESPONSE 0x23U
+#define BOLT_COMMAND_ASSOCIATE_REQUEST 0x24U
+#define BOLT_COMMAND_ASSOCIATE_RESPONSE 0x25U
+#define BOLT_COMMAND_ERROR 0x27U
+#define BOLT_STATUS_SUCCESS 0x22U
 
 static const char public_key_pem[] =
     "-----BEGIN PUBLIC KEY-----\n"
@@ -57,6 +67,211 @@ struct acceleration_public_key {
     EVP_PKEY *key;
     char *der_b64;
 };
+
+struct bolt_extension {
+    uint8_t type;
+    const unsigned char *value;
+    size_t length;
+};
+
+struct bolt_response {
+    uint8_t command;
+    uint8_t flags;
+    uint32_t session_id;
+    uint16_t connection_id;
+    uint8_t status;
+    bool has_status;
+    const unsigned char *payload;
+    size_t payload_length;
+};
+
+static void write_be16(unsigned char *output, uint16_t value)
+{
+    output[0] = (unsigned char)(value >> 8);
+    output[1] = (unsigned char)value;
+}
+
+static void write_be32(unsigned char *output, uint32_t value)
+{
+    output[0] = (unsigned char)(value >> 24);
+    output[1] = (unsigned char)(value >> 16);
+    output[2] = (unsigned char)(value >> 8);
+    output[3] = (unsigned char)value;
+}
+
+static uint16_t read_be16(const unsigned char *input)
+{
+    return (uint16_t)(((uint16_t)input[0] << 8) | input[1]);
+}
+
+static uint32_t read_be32(const unsigned char *input)
+{
+    return ((uint32_t)input[0] << 24) | ((uint32_t)input[1] << 16) |
+           ((uint32_t)input[2] << 8) | input[3];
+}
+
+static bool bolt_request_command(uint8_t command)
+{
+    return command == BOLT_COMMAND_CONNECT_REQUEST ||
+           command == BOLT_COMMAND_ASSOCIATE_REQUEST;
+}
+
+static bool bolt_status_command(uint8_t command)
+{
+    return command == BOLT_COMMAND_CONNECT_RESPONSE ||
+           command == BOLT_COMMAND_ASSOCIATE_RESPONSE ||
+           command == BOLT_COMMAND_ERROR;
+}
+
+static int bolt_encode_request(uint8_t command, uint32_t session_id,
+                               const struct bolt_extension *extensions,
+                               size_t extension_count,
+                               const unsigned char *payload,
+                               size_t payload_length, struct bytes *output)
+{
+    size_t header_length = 10;
+    size_t total_length;
+    size_t cursor;
+    size_t i;
+
+    if (!output || !bolt_request_command(command) || extension_count > UINT8_MAX ||
+        (extension_count && !extensions) || (payload_length && !payload))
+        return -1;
+    memset(output, 0, sizeof(*output));
+    for (i = 0; i < extension_count; i++) {
+        if (extensions[i].length > UINT8_MAX ||
+            (extensions[i].length && !extensions[i].value) ||
+            header_length + 2U + extensions[i].length > UINT8_MAX)
+            return -1;
+        header_length += 2U + extensions[i].length;
+    }
+    if (payload_length > UINT16_MAX - header_length)
+        return -1;
+    total_length = header_length + payload_length;
+    output->data = malloc(total_length);
+    if (!output->data)
+        return -1;
+    output->len = total_length;
+    output->data[0] = BOLT_PROTOCOL_VERSION;
+    output->data[1] = (unsigned char)header_length;
+    write_be16(output->data + 2, (uint16_t)total_length);
+    output->data[4] = command;
+    write_be32(output->data + 5, session_id);
+    output->data[9] = (unsigned char)extension_count;
+    cursor = 10;
+    for (i = 0; i < extension_count; i++) {
+        output->data[cursor++] = extensions[i].type;
+        output->data[cursor++] = (unsigned char)extensions[i].length;
+        if (extensions[i].length) {
+            memcpy(output->data + cursor, extensions[i].value,
+                   extensions[i].length);
+            cursor += extensions[i].length;
+        }
+    }
+    if (payload_length)
+        memcpy(output->data + header_length, payload, payload_length);
+    return 0;
+}
+
+static int bolt_encode_data(uint32_t session_id, uint16_t connection_id,
+                            const unsigned char *payload, size_t payload_length,
+                            struct bytes *output)
+{
+    size_t total_length = BOLT_DATA_HEADER_LENGTH + payload_length;
+
+    if (!output || (payload_length && !payload) ||
+        payload_length > UINT16_MAX - BOLT_DATA_HEADER_LENGTH)
+        return -1;
+    memset(output, 0, sizeof(*output));
+    output->data = malloc(total_length);
+    if (!output->data)
+        return -1;
+    output->len = total_length;
+    output->data[0] = BOLT_PROTOCOL_VERSION;
+    output->data[1] = BOLT_DATA_HEADER_LENGTH;
+    write_be16(output->data + 2, (uint16_t)total_length);
+    output->data[4] = BOLT_COMMAND_DATA;
+    write_be32(output->data + 5, session_id);
+    write_be16(output->data + 9, connection_id);
+    if (payload_length)
+        memcpy(output->data + BOLT_DATA_HEADER_LENGTH, payload, payload_length);
+    return 0;
+}
+
+static int bolt_parse_response(const unsigned char *frame, size_t frame_length,
+                               struct bolt_response *response)
+{
+    size_t minimum_header;
+    size_t header_length;
+    size_t total_length;
+    size_t cursor;
+    size_t i;
+    uint8_t extension_count;
+
+    if (!frame || !response || frame_length < 5 ||
+        (frame[0] & 0x0fU) != BOLT_PROTOCOL_VERSION)
+        return -1;
+    memset(response, 0, sizeof(*response));
+    minimum_header = frame[4] == BOLT_COMMAND_DATA ? BOLT_DATA_HEADER_LENGTH : 12U;
+    if (frame_length < minimum_header)
+        return -1;
+    header_length = frame[1];
+    total_length = read_be16(frame + 2);
+    if (header_length < minimum_header || header_length > total_length ||
+        total_length != frame_length)
+        return -1;
+    response->flags = frame[0] >> 4;
+    response->command = frame[4];
+    response->session_id = read_be32(frame + 5);
+    response->connection_id = read_be16(frame + 9);
+    if (response->command == BOLT_COMMAND_DATA) {
+        if (header_length != BOLT_DATA_HEADER_LENGTH)
+            return -1;
+        response->payload = frame + header_length;
+        response->payload_length = total_length - header_length;
+        return 0;
+    }
+    cursor = 11;
+    if (bolt_status_command(response->command)) {
+        if (cursor >= header_length)
+            return -1;
+        response->status = frame[cursor++];
+        response->has_status = true;
+    }
+    if (cursor >= header_length)
+        return -1;
+    extension_count = frame[cursor++];
+    for (i = 0; i < extension_count; i++) {
+        size_t extension_length;
+
+        if (cursor + 2U > header_length)
+            return -1;
+        extension_length = frame[cursor + 1];
+        cursor += 2U;
+        if (extension_length > header_length - cursor)
+            return -1;
+        cursor += extension_length;
+    }
+    if (cursor != header_length)
+        return -1;
+    response->payload = frame + header_length;
+    response->payload_length = total_length - header_length;
+    return 0;
+}
+
+static bool bolt_response_successful_for(const struct bolt_response *response,
+                                         uint8_t request_command)
+{
+    uint8_t expected;
+
+    if (!response || !bolt_request_command(request_command))
+        return false;
+    expected = request_command == BOLT_COMMAND_CONNECT_REQUEST
+                   ? BOLT_COMMAND_CONNECT_RESPONSE
+                   : BOLT_COMMAND_ASSOCIATE_RESPONSE;
+    return response->command == expected && response->has_status &&
+           response->status == BOLT_STATUS_SUCCESS && response->connection_id != 0;
+}
 
 static void bytes_free(struct bytes *value)
 {
@@ -1237,6 +1452,69 @@ out:
     return status;
 }
 
+static int clear_session_record(const char *path)
+{
+    struct stat info;
+    json_object *output = NULL;
+    bool removed = false;
+    int status = 1;
+
+    if (!path || lstat(path, &info) != 0) {
+        if (errno != ENOENT) {
+            fprintf(stderr, "unable to inspect private session file: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+    } else {
+        if (!S_ISREG(info.st_mode) || info.st_uid != geteuid() ||
+            (info.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+            fputs("refusing to remove an unsafe private session file\n", stderr);
+            return 1;
+        }
+        if (unlink(path) != 0) {
+            fprintf(stderr, "unable to remove private session file: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+        removed = true;
+    }
+    output = json_object_new_object();
+    if (!output)
+        return 1;
+    json_object_object_add(output, "success", json_object_new_boolean(true));
+    json_object_object_add(output, "removed", json_object_new_boolean(removed));
+    puts(json_object_to_json_string_ext(output, JSON_C_TO_STRING_PLAIN));
+    status = 0;
+    json_object_put(output);
+    return status;
+}
+
+static int read_secret_line(char *buffer, size_t buffer_size)
+{
+    size_t length;
+    int character;
+
+    if (!buffer || buffer_size < 2 || !fgets(buffer, (int)buffer_size, stdin))
+        return -1;
+    length = strlen(buffer);
+    if (length && buffer[length - 1] == '\n') {
+        buffer[--length] = '\0';
+    } else if (!feof(stdin)) {
+        while ((character = fgetc(stdin)) != '\n' && character != EOF)
+            ;
+        OPENSSL_cleanse(buffer, buffer_size);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    if (length && buffer[length - 1] == '\r')
+        buffer[--length] = '\0';
+    if (!length) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
 static int set_client_session(json_object *payload, const char *session_id)
 {
     json_object *client_user = object_member(payload, "clientUser", json_type_object);
@@ -1761,15 +2039,76 @@ out:
     return result;
 }
 
+static int run_bolt_v3_self_test(void)
+{
+    static const unsigned char endpoint[] = {0xc0, 0x00, 0x02, 0x01, 0x01, 0xbb};
+    static const unsigned char alpha[] = {'a', 'l', 'p', 'h', 'a'};
+    static const unsigned char enabled[] = {0x01};
+    static const struct bolt_extension extensions[] = {
+        {1, endpoint, sizeof(endpoint)},
+        {6, alpha, sizeof(alpha)},
+        {5, enabled, sizeof(enabled)},
+    };
+    static const unsigned char expected_request[] = {
+        0x03, 0x1c, 0x00, 0x1c, 0x22, 0x01, 0x02, 0x03, 0x04, 0x03,
+        0x01, 0x06, 0xc0, 0x00, 0x02, 0x01, 0x01, 0xbb,
+        0x06, 0x05, 0x61, 0x6c, 0x70, 0x68, 0x61, 0x05, 0x01, 0x01,
+    };
+    static const unsigned char marker[] = {0xde, 0xad, 0xbe, 0xef};
+    static const unsigned char expected_data[] = {
+        0x03, 0x0b, 0x00, 0x0f, 0x11, 0x01, 0x02, 0x03,
+        0x04, 0x12, 0x34, 0xde, 0xad, 0xbe, 0xef,
+    };
+    static const unsigned char associate_response[] = {
+        0x03, 0x15, 0x00, 0x18, 0x25, 0x01, 0x02, 0x03,
+        0x04, 0x12, 0x34, 0x22, 0x01, 0x01, 0x06, 0xcb,
+        0x00, 0x71, 0x08, 0x69, 0x87, 0x75, 0x64, 0x70,
+    };
+    struct bytes request = {0};
+    struct bytes data = {0};
+    struct bolt_response parsed = {0};
+    int status = 1;
+
+    if (bolt_encode_request(BOLT_COMMAND_CONNECT_REQUEST, 0x01020304U,
+                            extensions, sizeof(extensions) / sizeof(extensions[0]),
+                            NULL, 0, &request) != 0 ||
+        request.len != sizeof(expected_request) ||
+        memcmp(request.data, expected_request, sizeof(expected_request)) != 0 ||
+        bolt_encode_data(0x01020304U, 0x1234U, marker, sizeof(marker), &data) != 0 ||
+        data.len != sizeof(expected_data) ||
+        memcmp(data.data, expected_data, sizeof(expected_data)) != 0 ||
+        bolt_parse_response(data.data, data.len, &parsed) != 0 ||
+        parsed.command != BOLT_COMMAND_DATA || parsed.session_id != 0x01020304U ||
+        parsed.connection_id != 0x1234U || parsed.payload_length != sizeof(marker) ||
+        memcmp(parsed.payload, marker, sizeof(marker)) != 0 ||
+        bolt_parse_response(associate_response, sizeof(associate_response),
+                            &parsed) != 0 ||
+        !bolt_response_successful_for(&parsed,
+                                      BOLT_COMMAND_ASSOCIATE_REQUEST) ||
+        bolt_response_successful_for(&parsed, BOLT_COMMAND_CONNECT_REQUEST) ||
+        parsed.payload_length != 3 || memcmp(parsed.payload, "udp", 3) != 0 ||
+        bolt_parse_response(associate_response,
+                            sizeof(associate_response) - 1, &parsed) == 0)
+        goto out;
+    status = 0;
+
+out:
+    if (status != 0)
+        fputs("Bolt v3 frame self-test failed\n", stderr);
+    bytes_free(&request);
+    bytes_free(&data);
+    return status;
+}
+
 static int run_self_test(void)
 {
     if (run_login_cipher_self_test() != 0 || run_adat_cipher_self_test() != 0 ||
         run_acceleration_key_store_self_test() != 0 ||
-        run_session_storage_self_test() != 0)
+        run_session_storage_self_test() != 0 || run_bolt_v3_self_test() != 0)
         return 1;
     puts("{\"success\":true,\"tests\":[\"account-envelope\","
          "\"acceleration-adat\",\"acceleration-key-store\","
-         "\"private-session-store\"]}");
+         "\"private-session-store\",\"bolt-v3-frame\"]}");
     return 0;
 }
 
@@ -1790,10 +2129,13 @@ static void usage(FILE *stream)
             "                    Send a login code (default area code: 86)\n"
             "  sms-login PHONE CODE [AREA_CODE]\n"
             "                    Exchange a login code for an account session\n"
+            "  sms-login-stdin PHONE [AREA_CODE]\n"
+            "                    Read a login code from stdin and store a session\n"
             "  password-login LOGIN_NAME [AREA_CODE]\n"
             "                    Prompt privately for a password and log in\n"
             "  session-status    Print redacted local session state\n"
             "  session-refresh   Refresh and atomically replace the session\n"
+            "  session-clear     Safely remove the local account session\n"
             "  acc-key-import PATH\n"
             "                    Import VERSION|BASE64_DER from a private file\n"
             "  acc-key-status    Print version and fingerprint, never key data\n"
@@ -1854,6 +2196,8 @@ int main(int argc, char **argv)
         return run_self_test();
     if (strcmp(command, "session-status") == 0 && argument_count == 0)
         return print_session_status(session_file);
+    if (strcmp(command, "session-clear") == 0 && argument_count == 0)
+        return clear_session_record(session_file);
     if (strcmp(command, "acc-key-status") == 0 && argument_count == 0)
         return print_acceleration_key_status(acceleration_key_file);
     if (strcmp(command, "acc-key-import") == 0 && argument_count == 1)
@@ -1932,6 +2276,33 @@ int main(int argc, char **argv)
                                json_object_new_string(area_code));
         status = api_request("capi/login.loginWithSmsCode", payload, &result);
         store_method = "sms";
+    } else if (strcmp(command, "sms-login-stdin") == 0 &&
+               (argument_count == 1 || argument_count == 2)) {
+        const char *area_code = argument_count == 2 ? arguments[1] : "86";
+        char sms_code[32] = {0};
+
+        if (!decimal_string(arguments[0], 4, 20) ||
+            !decimal_string(area_code, 1, 4)) {
+            fprintf(stderr, "PHONE and AREA_CODE must contain digits only\n");
+            status = 2;
+            goto out;
+        }
+        if (read_secret_line(sms_code, sizeof(sms_code)) != 0 ||
+            !decimal_string(sms_code, 4, 10)) {
+            OPENSSL_cleanse(sms_code, sizeof(sms_code));
+            fprintf(stderr, "CODE must contain between 4 and 10 digits\n");
+            status = 2;
+            goto out;
+        }
+        json_object_object_add(payload, "mobile",
+                               json_object_new_string(arguments[0]));
+        json_object_object_add(payload, "smsCode",
+                               json_object_new_string(sms_code));
+        json_object_object_add(payload, "areaCode",
+                               json_object_new_string(area_code));
+        OPENSSL_cleanse(sms_code, sizeof(sms_code));
+        status = api_request("capi/login.loginWithSmsCode", payload, &result);
+        store_method = "sms";
     } else if (strcmp(command, "password-login") == 0 &&
                (argument_count == 1 || argument_count == 2)) {
         const char *area_code = argument_count == 2 ? arguments[1] : "86";
@@ -1984,6 +2355,7 @@ out:
     cleanse_json_value(result);
     json_object_put(result);
     cleanse_json_string(payload, "password");
+    cleanse_json_string(payload, "smsCode");
     cleanse_json_value(payload);
     json_object_put(payload);
     free(device_id);

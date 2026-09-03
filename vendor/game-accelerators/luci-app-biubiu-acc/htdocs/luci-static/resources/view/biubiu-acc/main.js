@@ -1,0 +1,548 @@
+'use strict';
+'require dom';
+'require fs';
+'require network';
+'require poll';
+'require rpc';
+'require ui';
+'require view';
+
+const COMMAND = '/usr/libexec/biubiu-acc-manager';
+const REQUEST_FILE = '/tmp/biubiu-acc/request.json';
+const TABS = [
+	[ 'overview', _('状态') ],
+	[ 'account', _('账号') ],
+	[ 'devices', _('设备') ],
+	[ 'acceleration', _('加速配置') ],
+	[ 'logs', _('日志') ]
+];
+
+const callDHCPLeases = rpc.declare({
+	object: 'luci-rpc',
+	method: 'getDHCPLeases',
+	expect: { '': {} }
+});
+
+let appNode = null;
+let activeTab = 'overview';
+let snapshot = { config: {}, session: {}, acceleration_key: {}, capabilities: {} };
+let devices = [];
+let logText = '';
+
+function commandError(res, fallback) {
+	return new Error((res && (res.stderr || res.stdout) || fallback || _('操作失败')).trim());
+}
+
+function parseJSONCommand(res, fallback) {
+	if (!res || res.code !== 0)
+		throw commandError(res, fallback);
+	try {
+		return JSON.parse(res.stdout || '{}');
+	}
+	catch (err) {
+		throw new Error(res.stderr || fallback || _('后端返回了无效数据'));
+	}
+}
+
+function getSnapshot() {
+	return fs.exec(COMMAND, [ 'snapshot' ]).then(function(res) {
+		return parseJSONCommand(res, _('无法读取 biubiu 状态'));
+	});
+}
+
+function getDevices() {
+	return Promise.all([
+		L.resolveDefault(callDHCPLeases(), {}),
+		L.resolveDefault(network.getHostHints(), null)
+	]).then(function(data) {
+		const leases = Array.isArray(data[0].dhcp_leases) ? data[0].dhcp_leases : [];
+		const hints = data[1];
+		const found = Object.create(null);
+
+		leases.forEach(function(lease) {
+			if (!lease.ipaddr)
+				return;
+			const mac = String(lease.macaddr || '').toLowerCase();
+			const key = mac || lease.ipaddr;
+			found[key] = {
+				name: lease.hostname || (hints && hints.getHostnameByMACAddr(mac)) || '',
+				mac: mac,
+				ip: lease.ipaddr,
+				active: true
+			};
+		});
+		if (hints) {
+			hints.getMACHints(false).forEach(function(item) {
+				const mac = String(item[0] || '').toLowerCase();
+				const ip = hints.getIPAddrByMACAddr(mac);
+				if (!ip || found[mac])
+					return;
+				found[mac] = {
+					name: hints.getHostnameByMACAddr(mac) || item[1] || '',
+					mac: mac,
+					ip: ip,
+					active: false
+				};
+			});
+		}
+		devices = Object.keys(found).map(function(key) { return found[key]; });
+		devices.sort(function(a, b) {
+			if (a.active !== b.active)
+				return a.active ? -1 : 1;
+			return L.naturalCompare(a.name || a.ip, b.name || b.ip);
+		});
+		return devices;
+	});
+}
+
+function notifyError(err) {
+	ui.addNotification(null, E('p', {}, err && err.message || String(err)), 'error');
+}
+
+function refreshView() {
+	return getSnapshot().then(function(next) {
+		snapshot = next;
+		if (appNode)
+			dom.content(appNode, renderPage());
+	});
+}
+
+function runRequest(payload, options) {
+	options = options || {};
+	return fs.write(REQUEST_FILE, JSON.stringify(payload), 384).then(function() {
+		return fs.exec(COMMAND, [ 'request' ]);
+	}).then(function(res) {
+		const result = parseJSONCommand(res, _('后端操作失败'));
+		if (result.success === false)
+			throw new Error(result.message || _('后端操作失败'));
+		if (options.notify !== false)
+			ui.addNotification(null, E('p', {}, result.message || _('操作完成')), 'info');
+		return options.refresh === false ? result : refreshView().then(function() { return result; });
+	});
+}
+
+function saveConfig(changes) {
+	const current = snapshot.config || {};
+	const payload = {
+		operation: 'save_config',
+		target_name: current.target_name || '',
+		target_ip: current.target_ip || '',
+		target_mac: current.target_mac || '',
+		target_id: current.target_id || '',
+		area_id: current.area_id || '',
+		platform_id: current.platform_id || '',
+		log_level: current.log_level || 'info'
+	};
+	Object.keys(changes || {}).forEach(function(key) { payload[key] = changes[key]; });
+	return runRequest(payload);
+}
+
+function button(label, style, handler, disabled, title) {
+	const attributes = {
+		type: 'button',
+		'class': 'cbi-button ' + (style || 'cbi-button-neutral'),
+		disabled: disabled ? 'disabled' : null,
+		title: title || null
+	};
+	if (handler)
+		attributes.click = handler;
+	return E('button', attributes, label);
+}
+
+function withBusy(ev, task) {
+	const target = ev && ev.currentTarget;
+	if (target) {
+		target.disabled = true;
+		target.classList.add('spinning');
+	}
+	return Promise.resolve().then(task).catch(notifyError).finally(function() {
+		if (target && document.body.contains(target)) {
+			target.disabled = false;
+			target.classList.remove('spinning');
+		}
+	});
+}
+
+function input(type, value, placeholder) {
+	return E('input', {
+		type: type || 'text',
+		value: value == null ? '' : value,
+		placeholder: placeholder || '',
+		autocomplete: type === 'password' ? 'new-password' : null
+	});
+}
+
+function select(options, value) {
+	return E('select', {}, options.map(function(item) {
+		return E('option', {
+			value: item[0],
+			selected: String(item[0]) === String(value) ? 'selected' : null,
+			disabled: item[2] ? 'disabled' : null
+		}, item[1]);
+	}));
+}
+
+function fieldRows(rows) {
+	const children = [];
+	rows.forEach(function(row) { children.push(E('label', {}, row[0]), row[1]); });
+	return E('div', { 'class': 'bba-form' }, children);
+}
+
+function modalActions(actions) {
+	return E('div', { 'class': 'right bba-actions' }, actions);
+}
+
+function badge(label, kind) {
+	return E('span', { 'class': 'bba-badge bba-' + kind }, label);
+}
+
+function table(headers, rows) {
+	return E('div', { 'class': 'bba-table-wrap' }, E('table', { 'class': 'bba-table' }, [
+		E('tr', {}, headers.map(function(header) { return E('th', {}, header); }))
+	].concat(rows)));
+}
+
+function section(title, actions, content) {
+	return E('section', { 'class': 'bba-section' }, [
+		E('div', { 'class': 'bba-section-head' }, [
+			E('h3', {}, title),
+			E('div', { 'class': 'bba-actions' }, actions || [])
+		]),
+		content
+	]);
+}
+
+function formatDuration(value) {
+	let seconds = Math.max(0, Math.floor(Number(value) || 0));
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor(seconds % 3600 / 60);
+	if (hours)
+		return '%d 小时 %d 分'.format(hours, minutes);
+	if (minutes)
+		return '%d 分 %d 秒'.format(minutes, seconds % 60);
+	return '%d 秒'.format(seconds);
+}
+
+function phaseBadge() {
+	if (snapshot.accelerating)
+		return badge(_('加速中'), 'ok');
+	if (snapshot.phase === 'transport_incomplete')
+		return badge(_('通道开发中'), 'warn');
+	return badge(snapshot.phase_message || _('等待配置'), 'idle');
+}
+
+function serviceAction(action) {
+	return runRequest({ operation: 'service_action', action: action });
+}
+
+function showLoginModal() {
+	const area = input('text', '86', '86');
+	const phone = input('tel', '', _('手机号'));
+	const code = input('text', '', _('短信验证码'));
+	code.setAttribute('inputmode', 'numeric');
+	code.setAttribute('autocomplete', 'one-time-code');
+	ui.showModal(_('手机号登录'), [
+		fieldRows([
+			[ _('国家/地区代码'), area ],
+			[ _('手机号'), phone ],
+			[ _('验证码'), code ]
+		]),
+		modalActions([
+			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
+			button(_('发送验证码'), 'cbi-button-neutral', function(ev) {
+				return withBusy(ev, function() {
+					return runRequest({ operation: 'sms_send', area_code: area.value.trim(), phone: phone.value.trim() }, { refresh: false });
+				});
+			}),
+			button(_('登录'), 'cbi-button-positive', function(ev) {
+				return withBusy(ev, function() {
+					return runRequest({
+						operation: 'sms_login', area_code: area.value.trim(),
+						phone: phone.value.trim(), code: code.value.trim()
+					}).then(ui.hideModal);
+				});
+			})
+		])
+	]);
+}
+
+function showKeyModal() {
+	const value = E('textarea', {
+		placeholder: 'VERSION|BASE64_X509_DER',
+		autocomplete: 'off',
+		spellcheck: 'false'
+	});
+	ui.showModal(_('导入加速业务公钥'), [
+		fieldRows([ [ _('公钥值'), value ] ]),
+		modalActions([
+			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
+			button(_('验证并导入'), 'cbi-button-positive', function(ev) {
+				return withBusy(ev, function() {
+					return runRequest({ operation: 'import_key', value: value.value.trim() }).then(ui.hideModal);
+				});
+			})
+		])
+	]);
+}
+
+function showDeviceModal(device) {
+	const name = input('text', device && device.name || '', _('设备名称'));
+	const ip = input('text', device && device.ip || '', '192.168.100.175');
+	const mac = input('text', device && device.mac || '', '00:11:22:33:44:55');
+	ui.showModal(device ? _('选择加速设备') : _('手动添加设备'), [
+		fieldRows([
+			[ _('设备名称'), name ],
+			[ _('IPv4 地址'), ip ],
+			[ _('MAC 地址'), mac ]
+		]),
+		modalActions([
+			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
+			button(_('保存'), 'cbi-button-positive', function(ev) {
+				return withBusy(ev, function() {
+					return saveConfig({
+						target_name: name.value.trim(), target_ip: ip.value.trim(),
+						target_mac: mac.value.trim().toLowerCase()
+					}).then(ui.hideModal);
+				});
+			})
+		])
+	]);
+}
+
+function showProfileModal() {
+	const config = snapshot.config || {};
+	const game = input('text', config.target_id || '', _('游戏 ID'));
+	const area = input('text', config.area_id || '', _('区服 ID'));
+	const platform = input('text', config.platform_id || '', _('平台 ID'));
+	const logLevel = select([
+		[ 'debug', 'Debug' ], [ 'info', 'Info' ], [ 'warn', 'Warn' ], [ 'error', 'Error' ]
+	], config.log_level || 'info');
+	game.setAttribute('inputmode', 'numeric');
+	area.setAttribute('inputmode', 'numeric');
+	platform.setAttribute('inputmode', 'numeric');
+	ui.showModal(_('编辑加速配置'), [
+		fieldRows([
+			[ _('游戏 ID'), game ],
+			[ _('区服 ID'), area ],
+			[ _('平台 ID'), platform ],
+			[ _('日志级别'), logLevel ]
+		]),
+		modalActions([
+			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
+			button(_('保存'), 'cbi-button-positive', function(ev) {
+				return withBusy(ev, function() {
+					return saveConfig({
+						target_id: game.value.trim(), area_id: area.value.trim(),
+						platform_id: platform.value.trim(), log_level: logLevel.value
+					}).then(ui.hideModal);
+				});
+			})
+		])
+	]);
+}
+
+function renderOverview() {
+	const session = snapshot.session || {};
+	const config = snapshot.config || {};
+	const managerText = snapshot.manager_running
+		? _('运行中') + (snapshot.rss_kb ? ' · ' + (snapshot.rss_kb / 1024).toFixed(1) + ' MB' : '')
+		: (snapshot.manager_enabled ? _('启动异常') : _('已停止'));
+	const capabilities = snapshot.capabilities || {};
+	const capabilityRows = [
+		[ _('账号登录与私有会话'), capabilities.account_login ],
+		[ _('设备与配置存储'), capabilities.profile_storage ],
+		[ _('Bolt v3 帧编解码'), capabilities.bolt_v3_codec ],
+		[ _('加速控制 API'), capabilities.control_api ],
+		[ _('TCP/UDP 数据通道'), capabilities.data_channel ],
+		[ _('nftables 流量接管'), capabilities.traffic_steering ]
+	].map(function(item) {
+		return E('tr', {}, [ E('td', {}, item[0]), E('td', {}, item[1] ? badge(_('已实现'), 'ok') : badge(_('开发中'), 'warn')) ]);
+	});
+	return E('div', {}, [
+		E('div', { 'class': 'bba-callout' }, snapshot.phase_message || _('等待配置')),
+		E('div', { 'class': 'bba-stat-grid' }, [
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('账号')), E('strong', {}, session.authenticated ? _('已登录') : _('未登录')) ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('目标设备')), E('strong', {}, config.target_name || config.target_ip || _('未选择')) ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('管理服务')), E('strong', {}, managerText) ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('流量状态')), E('strong', {}, snapshot.accelerating ? _('已接管') : _('未接管')) ])
+		]),
+		section(_('实现进度'), [
+			button(_('运行离线自检'), 'cbi-button-neutral', function(ev) {
+				return withBusy(ev, function() { return runRequest({ operation: 'self_test' }); });
+			})
+		], table([ _('模块'), _('状态') ], capabilityRows)),
+		snapshot.manager_running ? section(_('管理进程'), [], table([ 'PID', _('内存'), _('运行时间') ], [
+			E('tr', {}, [ E('td', { 'class': 'bba-code' }, String(snapshot.pid || '-')), E('td', {}, snapshot.rss_kb ? (snapshot.rss_kb / 1024).toFixed(1) + ' MB' : '-'), E('td', {}, formatDuration(snapshot.uptime_seconds)) ])
+		])) : null
+	]);
+}
+
+function renderAccount() {
+	const session = snapshot.session || {};
+	const key = snapshot.acceleration_key || {};
+	const fingerprint = key.fingerprint_sha256 ? key.fingerprint_sha256.slice(0, 16) + '…' : '-';
+	return E('div', {}, [
+		section(_('账号会话'), [
+			button(_('手机号登录'), 'cbi-button-add', showLoginModal),
+			button(_('续期'), 'cbi-button-neutral', function(ev) {
+				return withBusy(ev, function() { return runRequest({ operation: 'session_refresh' }); });
+			}, !session.refreshable),
+			button(_('退出本机'), 'cbi-button-negative', function(ev) {
+				return withBusy(ev, function() { return runRequest({ operation: 'session_clear' }); });
+			}, !session.authenticated)
+		], table([ _('项目'), _('状态') ], [
+			E('tr', {}, [ E('td', {}, _('登录状态')), E('td', {}, session.authenticated ? badge(_('已登录'), 'ok') : badge(_('未登录'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('登录方式')), E('td', {}, session.method || 'none') ]),
+			E('tr', {}, [ E('td', {}, _('Cookie 数量')), E('td', {}, String(session.cookie_count || 0)) ])
+		])),
+		section(_('加速业务公钥'), [ button(key.cached ? _('替换') : _('导入'), 'cbi-button-neutral', showKeyModal) ], table([ _('项目'), _('状态') ], [
+			E('tr', {}, [ E('td', {}, _('缓存状态')), E('td', {}, key.cached ? badge(_('已验证'), 'ok') : badge(_('未配置'), 'warn')) ]),
+			E('tr', {}, [ E('td', {}, _('密钥版本')), E('td', {}, key.cached ? String(key.key_version) : '-') ]),
+			E('tr', {}, [ E('td', {}, _('RSA 位数')), E('td', {}, key.cached ? String(key.rsa_bits) : '-') ]),
+			E('tr', {}, [ E('td', {}, _('SHA-256')), E('td', { 'class': 'bba-code' }, fingerprint) ])
+		]))
+	]);
+}
+
+function renderDevices() {
+	const config = snapshot.config || {};
+	const rows = devices.map(function(device) {
+		const selected = config.target_ip === device.ip && (!config.target_mac || config.target_mac === device.mac);
+		return E('tr', {}, [
+			E('td', {}, [ E('strong', {}, device.name || _('未命名设备')), E('div', { 'class': 'bba-muted' }, device.active ? _('当前在线') : _('历史设备')) ]),
+			E('td', { 'class': 'bba-code' }, device.ip),
+			E('td', { 'class': 'bba-code' }, device.mac || '-'),
+			E('td', {}, selected ? badge(_('已选择'), 'ok') : button(_('选择'), 'cbi-button-neutral', function() { showDeviceModal(device); }))
+		]);
+	});
+	return E('div', {}, [
+		section(_('当前目标'), config.target_ip ? [
+			button(_('清除选择'), 'cbi-button-negative', function(ev) {
+				return withBusy(ev, function() { return saveConfig({ target_name: '', target_ip: '', target_mac: '' }); });
+			})
+		] : [], config.target_ip ? table([ _('名称'), 'IPv4', 'MAC' ], [
+			E('tr', {}, [ E('td', {}, config.target_name || _('未命名设备')), E('td', { 'class': 'bba-code' }, config.target_ip), E('td', { 'class': 'bba-code' }, config.target_mac || '-') ])
+		]) : E('div', { 'class': 'bba-empty' }, _('尚未选择加速设备'))),
+		section(_('LAN 设备'), [
+			button(_('刷新'), 'cbi-button-neutral', function(ev) {
+				return withBusy(ev, function() { return getDevices().then(refreshView); });
+			}),
+			button(_('手动添加'), 'cbi-button-add', function() { showDeviceModal(null); })
+		], rows.length ? table([ _('设备'), 'IPv4', 'MAC', _('操作') ], rows) : E('div', { 'class': 'bba-empty' }, _('没有发现 DHCP 设备')))
+	]);
+}
+
+function renderAcceleration() {
+	const config = snapshot.config || {};
+	return E('div', {}, [
+		E('div', { 'class': 'bba-callout' }, _('数据通道尚未完成；当前版本不会修改 nftables，也不会接管目标设备流量。')),
+		section(_('加速参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
+			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, config.target_id || '-') ]),
+			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, config.area_id || '-') ]),
+			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, config.platform_id || '-') ]),
+			E('tr', {}, [ E('td', {}, _('日志级别')), E('td', {}, config.log_level || 'info') ])
+		])),
+		section(_('数据通道'), [
+			button(_('开始加速'), 'cbi-button-positive', null, true, _('数据通道尚未实现'))
+		], table([ _('状态'), _('结果') ], [
+			E('tr', {}, [ E('td', {}, _('控制 API')), E('td', {}, badge(_('开发中'), 'warn')) ]),
+			E('tr', {}, [ E('td', {}, _('Bolt 通道')), E('td', {}, badge(_('仅编解码完成'), 'info')) ]),
+			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, badge(_('未启用'), 'idle')) ])
+		]))
+	]);
+}
+
+function loadLogs() {
+	return fs.exec(COMMAND, [ 'logs' ]).then(function(res) {
+		if (!res || res.code !== 0)
+			throw commandError(res, _('读取日志失败'));
+		logText = res.stdout || '';
+		if (appNode)
+			dom.content(appNode, renderPage());
+	});
+}
+
+function renderLogs() {
+	return section(_('管理日志'), [
+		button(_('读取'), 'cbi-button-neutral', function(ev) { return withBusy(ev, loadLogs); }),
+		button(_('清空'), 'cbi-button-negative', function(ev) {
+			return withBusy(ev, function() {
+				return runRequest({ operation: 'clear_logs' }, { refresh: false }).then(function() {
+					logText = '';
+					if (appNode)
+						dom.content(appNode, renderPage());
+				});
+			});
+		})
+	], E('textarea', { 'class': 'bba-log', readonly: 'readonly', wrap: 'off' }, logText));
+}
+
+function renderTab() {
+	switch (activeTab) {
+	case 'account': return renderAccount();
+	case 'devices': return renderDevices();
+	case 'acceleration': return renderAcceleration();
+	case 'logs': return renderLogs();
+	default: return renderOverview();
+	}
+}
+
+function renderPage() {
+	const serviceButtons = snapshot.manager_running ? [
+		button(_('重启管理服务'), 'cbi-button-action', function(ev) {
+			return withBusy(ev, function() { return serviceAction('restart'); });
+		}),
+		button(_('停止'), 'cbi-button-negative', function(ev) {
+			return withBusy(ev, function() { return serviceAction('stop'); });
+		})
+	] : [ button(_('启动管理服务'), 'cbi-button-positive', function(ev) {
+		return withBusy(ev, function() { return serviceAction('start'); });
+	}) ];
+	return E('div', { 'class': 'bba-page' }, [
+		E('link', { rel: 'stylesheet', href: L.resource('view/biubiu-acc/main.css') }),
+		E('div', { 'class': 'bba-head' }, [
+			E('div', {}, [
+				E('h2', {}, 'biubiu 加速器'),
+				E('div', { 'class': 'bba-statusline' }, [ phaseBadge(), E('span', { 'class': 'bba-version' }, 'v' + (snapshot.version || 'unknown')) ])
+			]),
+			E('div', { 'class': 'bba-actions' }, serviceButtons)
+		]),
+		E('nav', { 'class': 'bba-tabs' }, TABS.map(function(tab) {
+			return E('button', {
+				type: 'button',
+				'class': 'bba-tab' + (activeTab === tab[0] ? ' active' : ''),
+				click: function() {
+					activeTab = tab[0];
+					if (appNode)
+						dom.content(appNode, renderPage());
+				}
+			}, tab[1]);
+		})),
+		renderTab()
+	]);
+}
+
+return view.extend({
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null,
+
+	load: function() {
+		return Promise.all([ getSnapshot(), getDevices() ]).then(function(data) {
+			snapshot = data[0];
+			return data;
+		});
+	},
+
+	render: function() {
+		appNode = E('div', {}, renderPage());
+		poll.add(function() {
+			return getSnapshot().then(function(next) {
+				snapshot = next;
+				if (appNode && !document.querySelector('.modal'))
+					dom.content(appNode, renderPage());
+			}).catch(function() {});
+		}, 5);
+		return appNode;
+	}
+});

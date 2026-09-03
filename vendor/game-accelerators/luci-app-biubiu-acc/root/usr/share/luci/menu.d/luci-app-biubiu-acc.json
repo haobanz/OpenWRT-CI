@@ -1,0 +1,13 @@
+{
+	"admin/services/biubiu-acc": {
+		"title": "biubiu 加速器",
+		"order": 37,
+		"action": {
+			"type": "view",
+			"path": "biubiu-acc/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-biubiu-acc" ]
+		}
+	}
+}

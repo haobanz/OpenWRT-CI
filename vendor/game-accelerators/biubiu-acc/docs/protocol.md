@@ -235,6 +235,20 @@ This supports a router-native design: select a LAN IP, obtain an authorized
 profile, then intercept only that client's game routes. It does not require a
 Windows process scanner on the accelerated machine.
 
+## OpenWrt management boundary
+
+Version 0.6.0 adds a procd supervisor and LuCI management plane without
+claiming that transport exists. Account credentials remain in root-only state
+files; LuCI sends SMS codes through a mode `0600` one-shot request and the C
+client reads the code from stdin. UCI contains only the selected LAN device,
+game/area/platform identifiers, and log level.
+
+The supervisor evaluates local account, target, and acceleration-key state. It
+always reports `accelerating=false` and never creates a TUN device, nftables
+rule, policy route, or data-channel socket. This keeps management work testable
+while preventing an incomplete implementation from silently disrupting the
+router.
+
 ## Remaining milestones
 
 1. Implement and runtime-verify game list, game profile, entitlement check, and
@@ -243,7 +257,8 @@ Windows process scanner on the accelerated machine.
 3. Implement the smallest compatible data channel, initially TCP and UDP,
    against user-authorized test sessions.
 4. Add nftables/TUN steering for one selected LAN IPv4 address.
-5. Add procd, ubus, LuCI, traffic counters, conflict checks, and rollback.
+5. Extend the completed procd/LuCI management foundation with traffic counters,
+   proxy conflict checks, transactional activation, and rollback.
 
 The transport layer is not assumed to be ordinary HTTP, SOCKS, or a standard
 VPN. Known names such as Bolt, KCP, UOT, and FEC are treated only as clues
@@ -340,3 +355,7 @@ rejects truncated or surplus extension bytes. It intentionally does not assign
 business meaning to opaque extension types, generate channel authorization, or
 open a socket. Runtime confirmation against an owner-authorized session remains
 required before this codec can become a transport implementation.
+
+The same request/data encoder and response parser are now implemented in the
+OpenWrt C client and covered by `biubiu-accctl self-test`. The C test uses only
+synthetic frames and performs no network request.

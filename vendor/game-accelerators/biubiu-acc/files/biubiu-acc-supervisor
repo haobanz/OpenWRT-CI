@@ -1,0 +1,91 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+CONFIG='biubiu-acc'
+CLI='/usr/bin/biubiu-accctl'
+RUNTIME_ROOT='/tmp/biubiu-acc'
+STATE_FILE="$RUNTIME_ROOT/status.json"
+INTERVAL=15
+LAST_PHASE=''
+
+umask 077
+
+json_field() {
+	jsonfilter -s "$1" -e "@.$2" 2>/dev/null | head -n 1
+}
+
+bool_value() {
+	case "$1" in 1|true|yes|on) printf '1\n' ;; *) printf '0\n' ;; esac
+}
+
+write_state() {
+	local phase="$1" message="$2" session_json="$3" key_json="$4"
+	local authenticated key_cached target_ip target_name temp
+
+	authenticated="$(json_field "$session_json" authenticated)"
+	key_cached="$(json_field "$key_json" cached)"
+	config_load "$CONFIG"
+	config_get target_ip main target_ip ''
+	config_get target_name main target_name ''
+	temp="$STATE_FILE.$$"
+
+	json_init
+	json_add_string phase "$phase"
+	json_add_string message "$message"
+	json_add_boolean accelerating 0
+	json_add_boolean authenticated "$(bool_value "$authenticated")"
+	json_add_boolean acceleration_key_cached "$(bool_value "$key_cached")"
+	json_add_string target_ip "$target_ip"
+	json_add_string target_name "$target_name"
+	json_add_int pid "$$"
+	json_add_int updated_at "$(date +%s)"
+	json_dump > "$temp"
+	printf '\n' >> "$temp"
+	chmod 0600 "$temp"
+	mv -f "$temp" "$STATE_FILE"
+}
+
+cleanup() {
+	rm -f "$STATE_FILE" "$STATE_FILE.$$"
+}
+
+terminate() {
+	exit 0
+}
+
+trap cleanup EXIT
+trap terminate INT TERM
+mkdir -p "$RUNTIME_ROOT"
+chmod 0700 "$RUNTIME_ROOT"
+
+while :; do
+	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false}')"
+	key_json="$($CLI acc-key-status 2>/dev/null || printf '{"cached":false}')"
+	authenticated="$(json_field "$session_json" authenticated)"
+	key_cached="$(json_field "$key_json" cached)"
+	config_load "$CONFIG"
+	config_get target_ip main target_ip ''
+
+	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
+		phase='account_required'
+		message='账号尚未登录'
+	elif [ -z "$target_ip" ]; then
+		phase='target_required'
+		message='尚未选择加速设备'
+	elif [ "$(bool_value "$key_cached")" -ne 1 ]; then
+		phase='key_required'
+		message='加速业务公钥尚未配置'
+	else
+		phase='transport_incomplete'
+		message='数据通道尚未完成，不会接管流量'
+	fi
+
+	write_state "$phase" "$message" "$session_json" "$key_json"
+	if [ "$phase" != "$LAST_PHASE" ]; then
+		logger -t biubiu-acc "state changed to $phase"
+		LAST_PHASE="$phase"
+	fi
+	sleep "$INTERVAL"
+done

@@ -1,0 +1,433 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+CONFIG='biubiu-acc'
+CLI='/usr/bin/biubiu-accctl'
+INIT='/etc/init.d/biubiu-acc'
+RUNTIME_ROOT='/tmp/biubiu-acc'
+REQUEST_FILE="$RUNTIME_ROOT/request.json"
+LOCK_DIR="$RUNTIME_ROOT/request.lock"
+STATE_FILE="$RUNTIME_ROOT/status.json"
+LOG_ROOT='/var/log/biubiu-acc'
+LOG_FILE="$LOG_ROOT/manager.log"
+TEMP_PREFIX="$RUNTIME_ROOT/job.$$"
+LOCK_HELD=0
+REMOVE_REQUEST=0
+
+umask 077
+
+cleanup() {
+	rm -f "$TEMP_PREFIX".* 2>/dev/null || true
+	[ "$REMOVE_REQUEST" -eq 0 ] || rm -f "$REQUEST_FILE"
+	[ "$LOCK_HELD" -eq 0 ] || rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+terminate() {
+	exit 1
+}
+
+trap cleanup EXIT
+trap terminate INT TERM
+
+prepare_dirs() {
+	mkdir -p "$RUNTIME_ROOT" "$LOG_ROOT" /etc/biubiu-acc
+	chmod 0700 "$RUNTIME_ROOT" "$LOG_ROOT" /etc/biubiu-acc
+	[ ! -f "/etc/config/$CONFIG" ] || chmod 0600 "/etc/config/$CONFIG"
+}
+
+trim_log() {
+	local size temp
+	[ -f "$LOG_FILE" ] || return 0
+	size="$(wc -c < "$LOG_FILE" 2>/dev/null || printf '0')"
+	case "$size" in ''|*[!0-9]*) size=0 ;; esac
+	[ "$size" -le 262144 ] && return 0
+	temp="$TEMP_PREFIX.log"
+	tail -c 131072 "$LOG_FILE" > "$temp" 2>/dev/null || return 0
+	mv -f "$temp" "$LOG_FILE"
+}
+
+log_event() {
+	local level="$1" action="$2" message="$3" clean
+	clean="$(printf '%s' "$message" | tr '\r\n' '  ' | cut -c 1-240)"
+	trim_log
+	printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds 2>/dev/null || date)" \
+		"$level" "$action" "$clean" >> "$LOG_FILE"
+	logger -t biubiu-acc "[$level] $action: $clean"
+}
+
+fail() {
+	local message="$*"
+	log_event error request "$message"
+	printf '%s\n' "$message" >&2
+	exit 1
+}
+
+emit_message() {
+	json_init
+	json_add_boolean success 1
+	json_add_string message "$1"
+	json_dump
+	printf '\n'
+}
+
+bool_value() {
+	case "$1" in 1|true|yes|on) printf '1\n' ;; *) printf '0\n' ;; esac
+}
+
+safe_text() {
+	local value="$1" maximum="$2" length
+	[ -n "$value" ] || return 1
+	! printf '%s' "$value" | grep -q '[[:cntrl:]]' || return 1
+	length="$(printf '%s' "$value" | wc -c)"
+	[ "$length" -le "$maximum" ]
+}
+
+decimal_value() {
+	local value="$1" maximum="$2" length
+	[ -n "$value" ] || return 1
+	case "$value" in *[!0-9]*) return 1 ;; esac
+	length="$(printf '%s' "$value" | wc -c)"
+	[ "$length" -le "$maximum" ]
+}
+
+valid_ipv4() (
+	local octet
+	set -f
+	IFS=.
+	# shellcheck disable=SC2086
+	set -- $1
+	[ "$#" -eq 4 ] || exit 1
+	for octet in "$@"; do
+		case "$octet" in ''|*[!0-9]*) exit 1 ;; esac
+		[ "$octet" -ge 0 ] 2>/dev/null && [ "$octet" -le 255 ] || exit 1
+	done
+)
+
+valid_mac() {
+	[ -z "$1" ] || printf '%s' "$1" | grep -Eqi '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+json_field() {
+	jsonfilter -s "$1" -e "@.$2" 2>/dev/null | head -n 1
+}
+
+uci_get() {
+	uci -q get "$CONFIG.$1.$2" 2>/dev/null || printf '%s\n' "${3:-}"
+}
+
+request_value() {
+	jsonfilter -i "$REQUEST_FILE" -e "@.$1" 2>/dev/null | head -n 1
+}
+
+acquire_request() {
+	local attempt=0 owner mode size
+	while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 30 ] || fail '另一个 biubiu 操作仍在执行'
+		usleep 100000 2>/dev/null || sleep 1
+	done
+	LOCK_HELD=1
+	if [ ! -f "$REQUEST_FILE" ] || [ -L "$REQUEST_FILE" ]; then
+		fail '请求文件不存在或不安全'
+	fi
+	owner="$(stat -c '%u' "$REQUEST_FILE" 2>/dev/null || printf 'invalid')"
+	mode="$(stat -c '%a' "$REQUEST_FILE" 2>/dev/null || printf 'invalid')"
+	size="$(wc -c < "$REQUEST_FILE" 2>/dev/null || printf '0')"
+	[ "$owner" = 0 ] || fail '请求文件必须属于 root'
+	[ "$mode" = 600 ] || fail '请求文件权限必须为 0600'
+	case "$size" in ''|*[!0-9]*) fail '请求文件大小无效' ;; esac
+	if [ "$size" -le 1 ] || [ "$size" -gt 16384 ]; then
+		fail '请求文件大小无效'
+	fi
+	REMOVE_REQUEST=1
+	jsonfilter -i "$REQUEST_FILE" -e '@.operation' >/dev/null 2>&1 || fail '请求 JSON 无效'
+}
+
+run_cli() {
+	local action="$1" message
+	shift
+	if "$CLI" "$@" > "$TEMP_PREFIX.out" 2> "$TEMP_PREFIX.err"; then
+		return 0
+	fi
+	message="$(tr '\r\n' '  ' < "$TEMP_PREFIX.err" | cut -c 1-240)"
+	[ -n "$message" ] || message='客户端命令执行失败'
+	log_event error "$action" "$message"
+	printf '%s\n' "$message" >&2
+	return 1
+}
+
+service_running() {
+	local pid command_line
+	pid="$(jsonfilter -i "$STATE_FILE" -e '@.pid' 2>/dev/null | head -n 1)"
+	case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+	[ -r "/proc/$pid/cmdline" ] || return 1
+	command_line="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+	case "$command_line" in *'/usr/libexec/biubiu-acc-supervisor'*) return 0 ;; *) return 1 ;; esac
+}
+
+snapshot() {
+	local version session_json key_json authenticated refreshable method cookies
+	local key_cached key_version key_bits fingerprint manager_enabled running phase message
+	local target_name target_ip target_mac target_id area_id platform_id log_level
+	local pid rss uptime_seconds process_start boot_seconds clock_ticks
+
+	version="$($CLI version 2>/dev/null | awk '{print $2; exit}')"
+	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false,"refreshable":false,"method":"none","cookieCount":0}')"
+	key_json="$($CLI acc-key-status 2>/dev/null || printf '{"cached":false}')"
+	authenticated="$(json_field "$session_json" authenticated)"
+	refreshable="$(json_field "$session_json" refreshable)"
+	method="$(json_field "$session_json" method)"
+	cookies="$(json_field "$session_json" cookieCount)"
+	key_cached="$(json_field "$key_json" cached)"
+	key_version="$(json_field "$key_json" keyVersion)"
+	key_bits="$(json_field "$key_json" rsaBits)"
+	fingerprint="$(json_field "$key_json" fingerprintSha256)"
+	manager_enabled="$(uci_get main manager_enabled 0)"
+	target_name="$(uci_get main target_name '')"
+	target_ip="$(uci_get main target_ip '')"
+	target_mac="$(uci_get main target_mac '')"
+	target_id="$(uci_get main target_id '')"
+	area_id="$(uci_get main area_id '')"
+	platform_id="$(uci_get main platform_id '')"
+	log_level="$(uci_get main log_level info)"
+	running=0
+	pid=0
+	rss=0
+	uptime_seconds=0
+	if service_running; then
+		running=1
+		pid="$(jsonfilter -i "$STATE_FILE" -e '@.pid' 2>/dev/null | head -n 1)"
+		rss="$(awk '$1 == "VmRSS:" { print $2; exit }' "/proc/$pid/status" 2>/dev/null)"
+		process_start="$(awk '{ print $22; exit }' "/proc/$pid/stat" 2>/dev/null)"
+		boot_seconds="$(awk '{ print int($1); exit }' /proc/uptime 2>/dev/null)"
+		clock_ticks="$(getconf CLK_TCK 2>/dev/null || printf '100')"
+		case "$process_start:$boot_seconds:$clock_ticks" in *[!0-9:]*|*':0') ;; *)
+			uptime_seconds=$((boot_seconds - process_start / clock_ticks))
+			[ "$uptime_seconds" -ge 0 ] || uptime_seconds=0
+		;; esac
+	fi
+	case "$cookies" in ''|*[!0-9]*) cookies=0 ;; esac
+	case "$key_version" in ''|*[!0-9]*) key_version=0 ;; esac
+	case "$key_bits" in ''|*[!0-9]*) key_bits=0 ;; esac
+	case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+	case "$rss" in ''|*[!0-9]*) rss=0 ;; esac
+
+	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
+		phase='account_required'
+		message='账号尚未登录'
+	elif [ -z "$target_ip" ]; then
+		phase='target_required'
+		message='尚未选择加速设备'
+	elif [ "$(bool_value "$key_cached")" -ne 1 ]; then
+		phase='key_required'
+		message='加速业务公钥尚未配置'
+	else
+		phase='transport_incomplete'
+		message='数据通道尚未完成，不会接管流量'
+	fi
+
+	json_init
+	json_add_string version "${version:-未安装}"
+	json_add_boolean manager_enabled "$(bool_value "$manager_enabled")"
+	json_add_boolean manager_running "$running"
+	json_add_boolean accelerating 0
+	json_add_boolean data_plane_ready 0
+	json_add_string phase "$phase"
+	json_add_string phase_message "$message"
+	json_add_int pid "$pid"
+	json_add_int rss_kb "$rss"
+	json_add_int uptime_seconds "$uptime_seconds"
+	json_add_object session
+	json_add_boolean authenticated "$(bool_value "$authenticated")"
+	json_add_boolean refreshable "$(bool_value "$refreshable")"
+	json_add_string method "${method:-none}"
+	json_add_int cookie_count "$cookies"
+	json_close_object
+	json_add_object acceleration_key
+	json_add_boolean cached "$(bool_value "$key_cached")"
+	json_add_int key_version "$key_version"
+	json_add_int rsa_bits "$key_bits"
+	json_add_string fingerprint_sha256 "$fingerprint"
+	json_close_object
+	json_add_object config
+	json_add_string target_name "$target_name"
+	json_add_string target_ip "$target_ip"
+	json_add_string target_mac "$target_mac"
+	json_add_string target_id "$target_id"
+	json_add_string area_id "$area_id"
+	json_add_string platform_id "$platform_id"
+	json_add_string log_level "$log_level"
+	json_close_object
+	json_add_object capabilities
+	json_add_boolean account_login 1
+	json_add_boolean profile_storage 1
+	json_add_boolean bolt_v3_codec 1
+	json_add_boolean control_api 0
+	json_add_boolean data_channel 0
+	json_add_boolean traffic_steering 0
+	json_close_object
+	json_dump
+	printf '\n'
+}
+
+save_config() {
+	local target_name target_ip target_mac target_id area_id platform_id log_level
+	target_name="$(request_value target_name)"
+	target_ip="$(request_value target_ip)"
+	target_mac="$(request_value target_mac)"
+	target_id="$(request_value target_id)"
+	area_id="$(request_value area_id)"
+	platform_id="$(request_value platform_id)"
+	log_level="$(request_value log_level)"
+	[ -z "$target_name" ] || safe_text "$target_name" 64 || fail '设备名称无效'
+	[ -z "$target_ip" ] || valid_ipv4 "$target_ip" || fail '设备 IPv4 地址无效'
+	valid_mac "$target_mac" || fail '设备 MAC 地址无效'
+	[ -z "$target_id" ] || decimal_value "$target_id" 20 || fail '游戏 ID 必须是数字'
+	[ -z "$area_id" ] || decimal_value "$area_id" 20 || fail '区服 ID 必须是数字'
+	[ -z "$platform_id" ] || decimal_value "$platform_id" 20 || fail '平台 ID 必须是数字'
+	case "$log_level" in debug|info|warn|error) ;; *) fail '日志级别无效' ;; esac
+
+	uci -q set "$CONFIG.main=biubiu_acc"
+	uci -q set "$CONFIG.main.target_name=$target_name"
+	uci -q set "$CONFIG.main.target_ip=$target_ip"
+	uci -q set "$CONFIG.main.target_mac=$target_mac"
+	uci -q set "$CONFIG.main.target_id=$target_id"
+	uci -q set "$CONFIG.main.area_id=$area_id"
+	uci -q set "$CONFIG.main.platform_id=$platform_id"
+	uci -q set "$CONFIG.main.log_level=$log_level"
+	uci -q commit "$CONFIG" || fail '保存配置失败'
+	$INIT reload >/dev/null 2>&1 || true
+	log_event info config "Saved target ${target_ip:-none}"
+	emit_message '设备与加速配置已保存'
+}
+
+send_sms() {
+	local phone area
+	phone="$(request_value phone)"
+	area="$(request_value area_code)"
+	decimal_value "$phone" 20 || fail '手机号必须是数字'
+	decimal_value "$area" 4 || fail '区号必须是数字'
+	run_cli sms-send sms-send "$phone" "$area" || exit 1
+	log_event info account 'SMS login code requested'
+	emit_message '验证码已发送'
+}
+
+login_sms() {
+	local phone area code message
+	phone="$(request_value phone)"
+	area="$(request_value area_code)"
+	code="$(request_value code)"
+	decimal_value "$phone" 20 || fail '手机号必须是数字'
+	decimal_value "$area" 4 || fail '区号必须是数字'
+	decimal_value "$code" 10 || fail '验证码必须是数字'
+	[ "$(printf '%s' "$code" | wc -c)" -ge 4 ] || fail '验证码至少 4 位'
+	if ! printf '%s\n' "$code" | "$CLI" sms-login-stdin "$phone" "$area" \
+		> "$TEMP_PREFIX.out" 2> "$TEMP_PREFIX.err"; then
+		code=''
+		message="$(tr '\r\n' '  ' < "$TEMP_PREFIX.err" | cut -c 1-240)"
+		[ -n "$message" ] || message='登录失败'
+		log_event error account "$message"
+		printf '%s\n' "$message" >&2
+		exit 1
+	fi
+	code=''
+	log_event info account 'SMS login completed and session stored'
+	emit_message '登录成功，会话已安全保存'
+}
+
+refresh_session() {
+	run_cli session-refresh session-refresh || exit 1
+	log_event info account 'Session refreshed'
+	emit_message '账号会话已续期'
+}
+
+clear_session() {
+	run_cli session-clear session-clear || exit 1
+	log_event info account 'Local session removed'
+	emit_message '本地账号会话已清除'
+}
+
+import_key() {
+	local value source
+	value="$(request_value value)"
+	safe_text "$value" 8192 || fail '公钥内容无效'
+	source="$TEMP_PREFIX.key"
+	printf '%s\n' "$value" > "$source"
+	chmod 0600 "$source"
+	run_cli key-import acc-key-import "$source" || exit 1
+	value=''
+	log_event info key 'Acceleration public key imported'
+	emit_message '加速业务公钥已导入'
+}
+
+self_test() {
+	run_cli self-test self-test || exit 1
+	log_event info diagnostics 'Offline self-test passed'
+	emit_message '本地协议与私有存储自检通过'
+}
+
+service_action() {
+	local action
+	action="$(request_value action)"
+	case "$action" in
+		start)
+			uci -q set "$CONFIG.main.manager_enabled=1"
+			uci -q commit "$CONFIG"
+			$INIT enable >/dev/null 2>&1 || true
+			$INIT restart >/dev/null 2>&1 || fail '管理服务启动失败'
+			;;
+		stop)
+			uci -q set "$CONFIG.main.manager_enabled=0"
+			uci -q commit "$CONFIG"
+			$INIT stop >/dev/null 2>&1 || true
+			$INIT disable >/dev/null 2>&1 || true
+			;;
+		restart)
+			[ "$(uci_get main manager_enabled 0)" = 1 ] || fail '管理服务尚未启用'
+			$INIT restart >/dev/null 2>&1 || fail '管理服务重启失败'
+			;;
+		*) fail '服务操作无效' ;;
+	esac
+	log_event info service "$action"
+	emit_message '管理服务状态已更新'
+}
+
+show_logs() {
+	[ -f "$LOG_FILE" ] || return 0
+	tail -n 300 "$LOG_FILE"
+}
+
+clear_logs() {
+	: > "$LOG_FILE"
+	chmod 0600 "$LOG_FILE"
+	emit_message '日志已清空'
+}
+
+handle_request() {
+	local operation
+	acquire_request
+	operation="$(request_value operation)"
+	case "$operation" in
+		save_config) save_config ;;
+		sms_send) send_sms ;;
+		sms_login) login_sms ;;
+		session_refresh) refresh_session ;;
+		session_clear) clear_session ;;
+		import_key) import_key ;;
+		self_test) self_test ;;
+		service_action) service_action ;;
+		clear_logs) clear_logs ;;
+		*) fail '不支持的操作' ;;
+	esac
+}
+
+prepare_dirs
+
+case "${1:-}" in
+	snapshot) snapshot ;;
+	request) handle_request ;;
+	logs) show_logs ;;
+	*) printf 'Usage: biubiu-acc-manager {snapshot|request|logs}\n' >&2; exit 2 ;;
+esac

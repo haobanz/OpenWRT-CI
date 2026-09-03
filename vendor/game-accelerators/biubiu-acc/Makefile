@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.5.0
+PKG_VERSION:=0.6.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -15,15 +15,19 @@ define Package/biubiu-acc
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Experimental clean-room biubiu accelerator client
-  DEPENDS:=+ca-bundle +libcurl +libjson-c +libopenssl
+  DEPENDS:=+ca-bundle +jshn +jsonfilter +libcurl +libjson-c +libopenssl +uci
   URL:=https://www.biubiu001.com/
 endef
 
 define Package/biubiu-acc/description
   An independently implemented OpenWrt client for user-authorized biubiu
-  sessions. The current milestone implements verified account login and the
-  separately observed acceleration ADAT envelope, with root-only session and
-  external acceleration public-key storage; transport is in development.
+  sessions. The current milestone implements verified account login, private
+  session state, a management supervisor, and the independently observed ADAT
+  and Bolt v3 codecs. The traffic transport remains in development.
+endef
+
+define Package/biubiu-acc/conffiles
+/etc/config/biubiu-acc
 endef
 
 define Build/Prepare
@@ -42,6 +46,13 @@ endef
 define Package/biubiu-acc/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/biubiu-accctl $(1)/usr/bin/biubiu-accctl
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./files/biubiu-acc.config $(1)/etc/config/biubiu-acc
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/biubiu-acc.init $(1)/etc/init.d/biubiu-acc
+	$(INSTALL_DIR) $(1)/usr/libexec
+	$(INSTALL_BIN) ./files/biubiu-acc-manager $(1)/usr/libexec/biubiu-acc-manager
+	$(INSTALL_BIN) ./files/biubiu-acc-supervisor $(1)/usr/libexec/biubiu-acc-supervisor
 	$(INSTALL_DIR) $(1)/etc/biubiu-acc
 	chmod 0700 $(1)/etc/biubiu-acc
 	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
@@ -54,6 +65,8 @@ define Package/biubiu-acc/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	mkdir -p /etc/biubiu-acc
 	chmod 0700 /etc/biubiu-acc
+	chmod 0600 /etc/config/biubiu-acc 2>/dev/null || true
+	/etc/init.d/biubiu-acc enable >/dev/null 2>&1 || true
 }
 exit 0
 endef

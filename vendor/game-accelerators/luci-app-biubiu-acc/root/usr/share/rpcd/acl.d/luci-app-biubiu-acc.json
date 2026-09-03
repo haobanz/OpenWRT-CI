@@ -1,0 +1,20 @@
+{
+	"luci-app-biubiu-acc": {
+		"description": "Grant access to the biubiu accelerator manager",
+		"read": {
+			"file": {
+				"/usr/libexec/biubiu-acc-manager snapshot": [ "exec" ],
+				"/usr/libexec/biubiu-acc-manager logs": [ "exec" ]
+			},
+			"ubus": {
+				"luci-rpc": [ "getDHCPLeases", "getHostHints" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/tmp/biubiu-acc/request.json": [ "write", "remove" ],
+				"/usr/libexec/biubiu-acc-manager request": [ "exec" ]
+			}
+		}
+	}
+}
