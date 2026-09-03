@@ -175,6 +175,24 @@ class HeartbeatModelTests(unittest.TestCase):
             heartbeat.build_heartbeat_request(
                 "example.test", valid_ciphertext, self.client, scheme="ftp"
             )
+        with self.assertRaises(ValueError):
+            heartbeat.build_heartbeat_plaintext(
+                uid=123456,
+                signal_session_id="synthetic-signal-session",
+                platform_id="7",
+                game_id=730,
+                area_id=1,
+                engine_version="3.0.0",
+                engine_client=self.client,
+            )
+
+    def test_request_headers_are_immutable(self) -> None:
+        encrypted = heartbeat.encrypt_heartbeat_payload(b"{}", self.material)
+        request = heartbeat.build_heartbeat_request(
+            "gtm-signal.example.test", encrypted, self.client
+        )
+        with self.assertRaises(TypeError):
+            request.headers["Content-Type"] = "text/plain"
 
 
 if __name__ == "__main__":

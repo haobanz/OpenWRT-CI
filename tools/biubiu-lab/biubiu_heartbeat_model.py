@@ -8,6 +8,7 @@ import binascii
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, ip_address
 import json
+from types import MappingProxyType
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -151,9 +152,10 @@ def build_heartbeat_plaintext(
 
     client = _string(engine_client, "engine client", maximum=8192)
     _json_object(client, "engine client")
+    platform = _integer(platform_id, "platform ID", minimum=1)
     value = {
         "uid": _integer(uid, "uid", minimum=1, maximum=0x7FFFFFFFFFFFFFFF),
-        "type": 5 if platform_id == CONSOLE_PLATFORM_ID else 1,
+        "type": 5 if platform == CONSOLE_PLATFORM_ID else 1,
         "appId": "biubiu",
         "engineVersion": _string(
             engine_version, "engine version", maximum=128
@@ -256,10 +258,12 @@ def build_heartbeat_request(
     return HeartbeatRequest(
         method="POST",
         url=f"{scheme}://{host}{HEARTBEAT_ENDPOINT}",
-        headers={
-            "Content-Type": HEARTBEAT_CONTENT_TYPE,
-            HEARTBEAT_HEADER: client,
-        },
+        headers=MappingProxyType(
+            {
+                "Content-Type": HEARTBEAT_CONTENT_TYPE,
+                HEARTBEAT_HEADER: client,
+            }
+        ),
         body=body,
     )
 
