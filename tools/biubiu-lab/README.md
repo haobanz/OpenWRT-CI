@@ -54,6 +54,13 @@ separate acceleration ADAT envelope. Its tests generate a temporary RSA key,
 verify independent key/IV wrapping, AES round trips, key rotation handling, and
 invalid input rejection:
 
+`biubiu_control_model.py` is also network-free. It extracts the acceleration
+identity from a login record and builds the observed game-list, search,
+entitlement, speedup-profile, and signal-login request models. It injects the
+service ticket and business user ID only into a copied `client.ex` object and
+rejects conflicting account data. It does not send requests or generate the
+mobile security SDK's anti-abuse headers.
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
