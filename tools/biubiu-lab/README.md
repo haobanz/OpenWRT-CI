@@ -59,7 +59,8 @@ identity from a login record and builds the observed game-list, search,
 entitlement, speedup-profile, and signal-login request models. It injects the
 service ticket and business user ID only into a copied `client.ex` object and
 rejects conflicting account data. It does not send requests or generate the
-mobile security SDK's anti-abuse headers.
+mobile security SDK's anti-abuse headers. It also validates and redacts signal
+login authorization data and builds the observed channel-ticket renewal shape.
 
 `biubiu_profile_model.py` parses the observed JSON engine-profile boundary. It
 normalizes TUN CIDRs and route ports, validates outbound references, and models

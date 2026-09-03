@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from enum import IntEnum
+from ipaddress import IPv4Address, ip_address
 import json
 import secrets
 import time
@@ -21,6 +22,11 @@ SPEEDUP_CONFIG_ENDPOINT = (
     "/api/ping-server.biuvpn.game.getSpeedupConfig?df=adat&ver=1.0.1"
 )
 SIGNAL_LOGIN_ENDPOINT = "/api/ping-signal.open.login.loginV2?df=adat&ver=1.0.0"
+CHANNEL_TICKET_ENDPOINT = (
+    "/api/ping-signal.open.auth.getChannelStV2?df=adat&ver=1.0.0"
+)
+
+CHANNEL_PROTOCOLS = frozenset({"TCP", "UDP", "ICMP"})
 
 
 class Platform(IntEnum):
@@ -64,6 +70,35 @@ class ControlRequest:
     body: dict[str, Any] = field(repr=False)
 
 
+@dataclass(frozen=True)
+class ChannelAuthorization:
+    channel_address: str
+    channel_ip: str
+    channel_ticket: str = field(repr=False)
+    data_channel_session_id: int
+    expires_at: int
+    port: int
+    protocol: str
+    secret_type: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class SignalAuthorization:
+    signal_session_id: str = field(repr=False)
+    token: str = field(repr=False)
+    xor: str = field(repr=False)
+    channels: tuple[ChannelAuthorization, ...]
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "channelCount": len(self.channels),
+            "protocols": sorted({channel.protocol for channel in self.channels}),
+            "hasSignalSession": bool(self.signal_session_id),
+            "hasToken": bool(self.token),
+            "hasXor": bool(self.xor),
+        }
+
+
 def _ascii_decimal(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -98,6 +133,48 @@ def _nonnegative_int(value: int, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return value
+
+
+def _bounded_int(value: object, name: str, minimum: int, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _string(
+    value: object, name: str, *, required: bool = True, maximum: int = 4096
+) -> str:
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str) or (required and not value):
+        qualifier = "a non-empty" if required else "a"
+        raise ValueError(f"{name} must be {qualifier} string")
+    if len(value) > maximum:
+        raise ValueError(f"{name} is too long")
+    return value
+
+
+def _channel_protocol(value: object, name: str) -> str:
+    protocol = _string(value, name, maximum=8).upper()
+    if protocol not in CHANNEL_PROTOCOLS:
+        raise ValueError(f"{name} is unsupported")
+    return protocol
+
+
+def _channel_ip(value: object, name: str) -> str:
+    text = _string(value, name, maximum=64)
+    try:
+        address = ip_address(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an IPv4 address") from exc
+    if not isinstance(address, IPv4Address):
+        raise ValueError(f"{name} must be an IPv4 address")
+    return str(address)
 
 
 def _authenticated_client(
@@ -237,20 +314,22 @@ def signal_login_request(
     if not isinstance(signal_ticket, str) or not signal_ticket:
         raise ValueError("signal ticket must not be empty")
     channel_list: list[dict[str, Any]] = []
-    for channel in channels:
+    for index, channel in enumerate(channels):
+        name = f"channels[{index}]"
         if not isinstance(channel, Mapping):
-            raise ValueError("channel must be an object")
-        address = channel.get("dataChannelIp")
-        protocol = channel.get("proType")
-        port = channel.get("port")
-        if not isinstance(address, str) or not address:
-            raise ValueError("channel address must not be empty")
-        if not isinstance(protocol, str) or not protocol:
-            raise ValueError("channel protocol must not be empty")
-        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError("channel port is invalid")
+            raise ValueError(f"{name} must be an object")
         channel_list.append(
-            {"dataChannelIp": address, "port": port, "proType": protocol}
+            {
+                "dataChannelIp": _channel_ip(
+                    channel.get("dataChannelIp"), f"{name}.dataChannelIp"
+                ),
+                "port": _bounded_int(
+                    channel.get("port"), f"{name}.port", 1, 65535
+                ),
+                "proType": _channel_protocol(
+                    channel.get("proType"), f"{name}.proType"
+                ),
+            }
         )
     if not channel_list:
         raise ValueError("signal login requires at least one data channel")
@@ -260,3 +339,134 @@ def signal_login_request(
         "signalSt": signal_ticket,
     }
     return _request(SIGNAL_LOGIN_ENDPOINT, data, identity, client_template, request_id)
+
+
+def _parse_channel_authorizations(
+    raw_channels: object, list_name: str
+) -> tuple[ChannelAuthorization, ...]:
+    if not isinstance(raw_channels, list) or not raw_channels:
+        raise ValueError(f"{list_name} must contain channels")
+
+    channels: list[ChannelAuthorization] = []
+    for index, raw_channel in enumerate(raw_channels):
+        name = f"{list_name}[{index}]"
+        if not isinstance(raw_channel, Mapping):
+            raise ValueError(f"{name} must be an object")
+        channels.append(
+            ChannelAuthorization(
+                channel_address=_string(
+                    raw_channel.get("channelAddress", ""),
+                    f"{name}.channelAddress",
+                    required=False,
+                    maximum=1024,
+                ),
+                channel_ip=_channel_ip(
+                    raw_channel.get("channelIp"), f"{name}.channelIp"
+                ),
+                channel_ticket=_string(
+                    raw_channel.get("channelSt"), f"{name}.channelSt"
+                ),
+                data_channel_session_id=_bounded_int(
+                    raw_channel.get("dataChannelSessionId"),
+                    f"{name}.dataChannelSessionId",
+                    1,
+                    0xFFFFFFFF,
+                ),
+                expires_at=_bounded_int(
+                    raw_channel.get("expireTime"),
+                    f"{name}.expireTime",
+                    0,
+                    0x7FFFFFFFFFFFFFFF,
+                ),
+                port=_bounded_int(
+                    raw_channel.get("port"), f"{name}.port", 1, 65535
+                ),
+                protocol=_channel_protocol(
+                    raw_channel.get("proType"), f"{name}.proType"
+                ),
+                secret_type=_string(
+                    raw_channel.get("secretType"), f"{name}.secretType"
+                ),
+            )
+        )
+    return tuple(channels)
+
+
+def parse_signal_authorization(value: object) -> SignalAuthorization:
+    """Parse the direct `data` object returned by signal login."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("signal authorization must be an object")
+    channels = _parse_channel_authorizations(
+        value.get("channelAuthList"), "channelAuthList"
+    )
+
+    return SignalAuthorization(
+        signal_session_id=_string(
+            value.get("signalSessionId"), "signalSessionId"
+        ),
+        token=_string(value.get("token"), "token"),
+        xor=_string(value.get("xor", ""), "xor", required=False),
+        channels=channels,
+    )
+
+
+def parse_channel_ticket_data(value: object) -> tuple[ChannelAuthorization, ...]:
+    """Parse the direct `data` object returned by channel-ticket renewal."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("channel ticket response must be an object")
+    return _parse_channel_authorizations(
+        value.get("dataChannelList"), "dataChannelList"
+    )
+
+
+def channel_ticket_request(
+    identity: AccountIdentity,
+    client_template: Mapping[str, Any],
+    engine_client: Mapping[str, Any],
+    channels: Sequence[Mapping[str, Any]],
+    *,
+    request_id: str | None = None,
+) -> ControlRequest:
+    if not isinstance(engine_client, Mapping):
+        raise ValueError("engine client must be an object")
+    channel_list: list[dict[str, Any]] = []
+    for index, channel in enumerate(channels):
+        name = f"channels[{index}]"
+        if not isinstance(channel, Mapping):
+            raise ValueError(f"{name} must be an object")
+        channel_list.append(
+            {
+                "channelIp": _channel_ip(
+                    channel.get("channelIp"), f"{name}.channelIp"
+                ),
+                "dataChannelSessionId": _bounded_int(
+                    channel.get("dataChannelSessionId"),
+                    f"{name}.dataChannelSessionId",
+                    1,
+                    0xFFFFFFFF,
+                ),
+                "port": _bounded_int(
+                    channel.get("port"), f"{name}.port", 1, 65535
+                ),
+                "proType": _channel_protocol(
+                    channel.get("proType"), f"{name}.proType"
+                ),
+                "secretType": _string(
+                    channel.get("secretType"), f"{name}.secretType"
+                ),
+                "type": _bounded_int(
+                    channel.get("type"), f"{name}.type", 0, 0x7FFFFFFF
+                ),
+            }
+        )
+    if not channel_list:
+        raise ValueError("channel ticket request requires at least one channel")
+    data = {
+        "engineClient": copy.deepcopy(dict(engine_client)),
+        "channelAuthDTO": {"dataChannelList": channel_list},
+    }
+    return _request(
+        CHANNEL_TICKET_ENDPOINT, data, identity, client_template, request_id
+    )

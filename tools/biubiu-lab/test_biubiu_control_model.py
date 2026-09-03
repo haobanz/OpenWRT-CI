@@ -133,6 +133,7 @@ class ControlModelTests(unittest.TestCase):
         self.assertEqual(request.endpoint, control.SIGNAL_LOGIN_ENDPOINT)
         self.assertEqual(request.body["data"]["engineClient"], engine_client)
         self.assertEqual(request.body["data"]["list"][0]["port"], 443)
+        self.assertEqual(request.body["data"]["list"][0]["proType"], "TCP")
 
         with self.assertRaises(ValueError):
             control.signal_login_request(
@@ -142,6 +143,126 @@ class ControlModelTests(unittest.TestCase):
                 [],
                 "private-signal-ticket",
             )
+
+    def test_signal_authorization_is_validated_and_redacted(self) -> None:
+        response_data = {
+            "signalSessionId": "private-signal-session",
+            "token": "private-signal-token",
+            "xor": "private-xor-value",
+            "channelAuthList": [
+                {
+                    "channelAddress": "test-channel",
+                    "channelIp": "192.0.2.20",
+                    "channelSt": "private-channel-ticket",
+                    "dataChannelSessionId": 0x01020304,
+                    "expireTime": 1700000000000,
+                    "port": 443,
+                    "proType": "tcp",
+                    "secretType": "private-secret-type",
+                }
+            ],
+        }
+        authorization = control.parse_signal_authorization(response_data)
+
+        self.assertEqual(authorization.channels[0].protocol, "TCP")
+        self.assertEqual(authorization.channels[0].channel_ip, "192.0.2.20")
+        self.assertEqual(
+            authorization.summary(),
+            {
+                "channelCount": 1,
+                "protocols": ["TCP"],
+                "hasSignalSession": True,
+                "hasToken": True,
+                "hasXor": True,
+            },
+        )
+        rendered = repr(authorization)
+        self.assertNotIn("private-signal-session", rendered)
+        self.assertNotIn("private-signal-token", rendered)
+        self.assertNotIn("private-xor-value", rendered)
+        self.assertNotIn("private-channel-ticket", rendered)
+        self.assertNotIn("private-secret-type", rendered)
+
+        renewed = control.parse_channel_ticket_data(
+            {"dataChannelList": response_data["channelAuthList"]}
+        )
+        self.assertEqual(renewed, authorization.channels)
+
+        nullable = copy.deepcopy(response_data)
+        nullable["xor"] = None
+        nullable["channelAuthList"][0]["channelAddress"] = None
+        parsed_nullable = control.parse_signal_authorization(nullable)
+        self.assertEqual(parsed_nullable.xor, "")
+        self.assertEqual(parsed_nullable.channels[0].channel_address, "")
+
+    def test_channel_ticket_request_matches_observed_shape(self) -> None:
+        engine_client = {
+            "gameId": 10,
+            "uid": "123456789",
+            "type": 6,
+            "areaId": 20,
+            "engineVersion": "offline",
+            "appId": "offline-app",
+            "signalSessionId": "private-signal-session",
+            "speedupSession": "private-speedup-session",
+        }
+        channel = {
+            "channelIp": "192.0.2.20",
+            "dataChannelSessionId": 0x01020304,
+            "port": 443,
+            "proType": "tcp",
+            "secretType": "offline-secret-type",
+            "type": 1,
+        }
+        request = control.channel_ticket_request(
+            self.identity,
+            self.client,
+            engine_client,
+            [channel],
+            request_id="17000000000001234",
+        )
+
+        self.assertEqual(request.endpoint, control.CHANNEL_TICKET_ENDPOINT)
+        self.assertEqual(request.body["data"]["engineClient"], engine_client)
+        wire_channel = request.body["data"]["channelAuthDTO"]["dataChannelList"][0]
+        self.assertEqual(wire_channel["proType"], "TCP")
+        self.assertNotIn("channelSt", wire_channel)
+        self.assertNotIn("private-signal-session", repr(request))
+
+    def test_invalid_signal_authorization_is_rejected(self) -> None:
+        base = {
+            "signalSessionId": "session",
+            "token": "token",
+            "xor": "",
+            "channelAuthList": [
+                {
+                    "channelAddress": "",
+                    "channelIp": "192.0.2.20",
+                    "channelSt": "ticket",
+                    "dataChannelSessionId": 1,
+                    "expireTime": 1,
+                    "port": 443,
+                    "proType": "UDP",
+                    "secretType": "type",
+                }
+            ],
+        }
+        invalid_values = (None, {}, {**base, "channelAuthList": []})
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                control.parse_signal_authorization(value)
+
+        for field, value in (
+            ("channelIp", "not-an-ip"),
+            ("dataChannelSessionId", 0),
+            ("port", 0),
+            ("proType", "unknown"),
+            ("channelSt", ""),
+        ):
+            invalid = copy.deepcopy(base)
+            invalid["channelAuthList"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                control.parse_signal_authorization(invalid)
 
 
 if __name__ == "__main__":
