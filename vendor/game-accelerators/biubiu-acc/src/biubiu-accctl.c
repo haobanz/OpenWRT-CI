@@ -16,7 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.2.0"
+#define BIUBIU_ACC_VERSION "0.3.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
 
@@ -37,6 +37,11 @@ struct response_buffer {
     char *data;
     size_t len;
     bool too_large;
+};
+
+struct adat_session_keys {
+    unsigned char key[16];
+    unsigned char iv[16];
 };
 
 static void bytes_free(struct bytes *value)
@@ -200,6 +205,228 @@ out:
         bytes_free(plaintext);
     EVP_CIPHER_CTX_free(ctx);
     return result;
+}
+
+static int adat_random_session_keys(struct adat_session_keys *keys)
+{
+    if (RAND_bytes(keys->key, sizeof(keys->key)) != 1 ||
+        RAND_bytes(keys->iv, sizeof(keys->iv)) != 1) {
+        OPENSSL_cleanse(keys, sizeof(*keys));
+        return -1;
+    }
+    return 0;
+}
+
+static int adat_aes_encrypt(const struct adat_session_keys *keys,
+                            const unsigned char *plaintext, size_t plaintext_len,
+                            struct bytes *ciphertext)
+{
+    EVP_CIPHER_CTX *ctx = NULL;
+    int output_len = 0;
+    int final_len = 0;
+    int result = -1;
+
+    memset(ciphertext, 0, sizeof(*ciphertext));
+    if (plaintext_len > (size_t)INT32_MAX)
+        return -1;
+    ciphertext->data = malloc(plaintext_len + EVP_MAX_BLOCK_LENGTH);
+    if (!ciphertext->data)
+        return -1;
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx ||
+        EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, keys->key, keys->iv) != 1 ||
+        EVP_EncryptUpdate(ctx, ciphertext->data, &output_len, plaintext,
+                          (int)plaintext_len) != 1 ||
+        EVP_EncryptFinal_ex(ctx, ciphertext->data + output_len, &final_len) != 1)
+        goto out;
+    ciphertext->len = (size_t)(output_len + final_len);
+    result = 0;
+
+out:
+    if (result != 0)
+        bytes_free(ciphertext);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
+}
+
+static int adat_aes_decrypt(const struct adat_session_keys *keys,
+                            const unsigned char *ciphertext, size_t ciphertext_len,
+                            struct bytes *plaintext)
+{
+    EVP_CIPHER_CTX *ctx = NULL;
+    int output_len = 0;
+    int final_len = 0;
+    int result = -1;
+
+    memset(plaintext, 0, sizeof(*plaintext));
+    if (!ciphertext_len || ciphertext_len % 16 ||
+        ciphertext_len > (size_t)INT32_MAX)
+        return -1;
+    plaintext->data = malloc(ciphertext_len + 1);
+    if (!plaintext->data)
+        return -1;
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx ||
+        EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, keys->key, keys->iv) != 1 ||
+        EVP_DecryptUpdate(ctx, plaintext->data, &output_len, ciphertext,
+                          (int)ciphertext_len) != 1 ||
+        EVP_DecryptFinal_ex(ctx, plaintext->data + output_len, &final_len) != 1)
+        goto out;
+    plaintext->len = (size_t)(output_len + final_len);
+    plaintext->data[plaintext->len] = '\0';
+    result = 0;
+
+out:
+    if (result != 0)
+        bytes_free(plaintext);
+    EVP_CIPHER_CTX_free(ctx);
+    return result;
+}
+
+static int rsa_encrypt_value(EVP_PKEY *public_key, const unsigned char *input,
+                             size_t input_len, struct bytes *encrypted)
+{
+    EVP_PKEY_CTX *ctx = NULL;
+    size_t encrypted_len = 0;
+    int result = -1;
+
+    memset(encrypted, 0, sizeof(*encrypted));
+    ctx = EVP_PKEY_CTX_new(public_key, NULL);
+    if (!ctx || EVP_PKEY_encrypt_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0 ||
+        EVP_PKEY_encrypt(ctx, NULL, &encrypted_len, input, input_len) <= 0)
+        goto out;
+    encrypted->data = malloc(encrypted_len);
+    if (!encrypted->data)
+        goto out;
+    if (EVP_PKEY_encrypt(ctx, encrypted->data, &encrypted_len, input, input_len) <= 0)
+        goto out;
+    encrypted->len = encrypted_len;
+    result = 0;
+
+out:
+    if (result != 0)
+        bytes_free(encrypted);
+    EVP_PKEY_CTX_free(ctx);
+    return result;
+}
+
+static int rsa_decrypt_value(EVP_PKEY *private_key, const unsigned char *input,
+                             size_t input_len, struct bytes *decrypted)
+{
+    EVP_PKEY_CTX *ctx = NULL;
+    size_t decrypted_len = 0;
+    int result = -1;
+
+    memset(decrypted, 0, sizeof(*decrypted));
+    ctx = EVP_PKEY_CTX_new(private_key, NULL);
+    if (!ctx || EVP_PKEY_decrypt_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0 ||
+        EVP_PKEY_decrypt(ctx, NULL, &decrypted_len, input, input_len) <= 0)
+        goto out;
+    decrypted->data = malloc(decrypted_len + 1);
+    if (!decrypted->data)
+        goto out;
+    if (EVP_PKEY_decrypt(ctx, decrypted->data, &decrypted_len, input, input_len) <= 0)
+        goto out;
+    decrypted->len = decrypted_len;
+    decrypted->data[decrypted->len] = '\0';
+    result = 0;
+
+out:
+    if (result != 0)
+        bytes_free(decrypted);
+    EVP_PKEY_CTX_free(ctx);
+    return result;
+}
+
+static json_object *build_adat_envelope(json_object *payload, int key_version,
+                                        EVP_PKEY *public_key,
+                                        struct adat_session_keys *keys)
+{
+    const char *payload_json;
+    struct bytes ciphertext = {0};
+    struct bytes encrypted_key = {0};
+    struct bytes encrypted_iv = {0};
+    char *ciphertext_b64 = NULL;
+    char *encrypted_key_b64 = NULL;
+    char *encrypted_iv_b64 = NULL;
+    json_object *envelope = NULL;
+
+    if (!payload || key_version < 1 || !public_key || !keys ||
+        adat_random_session_keys(keys) != 0)
+        goto out;
+    payload_json = json_object_to_json_string_ext(payload, JSON_C_TO_STRING_PLAIN);
+    if (adat_aes_encrypt(keys, (const unsigned char *)payload_json,
+                         strlen(payload_json), &ciphertext) != 0 ||
+        rsa_encrypt_value(public_key, keys->key, sizeof(keys->key),
+                          &encrypted_key) != 0 ||
+        rsa_encrypt_value(public_key, keys->iv, sizeof(keys->iv),
+                          &encrypted_iv) != 0)
+        goto out;
+    ciphertext_b64 = base64_encode(ciphertext.data, ciphertext.len);
+    encrypted_key_b64 = base64_encode(encrypted_key.data, encrypted_key.len);
+    encrypted_iv_b64 = base64_encode(encrypted_iv.data, encrypted_iv.len);
+    if (!ciphertext_b64 || !encrypted_key_b64 || !encrypted_iv_b64)
+        goto out;
+
+    envelope = json_object_new_object();
+    if (!envelope)
+        goto out;
+    json_object_object_add(envelope, "k", json_object_new_string(encrypted_key_b64));
+    json_object_object_add(envelope, "v", json_object_new_int(key_version));
+    json_object_object_add(envelope, "d", json_object_new_string(ciphertext_b64));
+    json_object_object_add(envelope, "i", json_object_new_string(encrypted_iv_b64));
+
+out:
+    free(ciphertext_b64);
+    free(encrypted_key_b64);
+    free(encrypted_iv_b64);
+    bytes_free(&ciphertext);
+    bytes_free(&encrypted_key);
+    bytes_free(&encrypted_iv);
+    if (!envelope)
+        OPENSSL_cleanse(keys, sizeof(*keys));
+    return envelope;
+}
+
+static int decrypt_adat_response(json_object *outer,
+                                 const struct adat_session_keys *keys,
+                                 json_object **result)
+{
+    json_object *code = NULL;
+    json_object *encoded_value = NULL;
+    const char *encoded;
+    struct bytes ciphertext = {0};
+    struct bytes plaintext = {0};
+    json_object *parsed = NULL;
+    int status = -1;
+
+    if (!outer || !keys || !result)
+        return -1;
+    *result = NULL;
+    if (json_object_object_get_ex(outer, "c", &code) &&
+        json_object_get_int(code) == 2)
+        return 2;
+    if (!json_object_object_get_ex(outer, "d", &encoded_value) ||
+        !json_object_is_type(encoded_value, json_type_string))
+        return -1;
+    encoded = json_object_get_string(encoded_value);
+    if (base64_decode(encoded, &ciphertext) != 0 ||
+        adat_aes_decrypt(keys, ciphertext.data, ciphertext.len, &plaintext) != 0)
+        goto out;
+    parsed = json_tokener_parse((const char *)plaintext.data);
+    if (!parsed)
+        goto out;
+    *result = parsed;
+    parsed = NULL;
+    status = 0;
+
+out:
+    json_object_put(parsed);
+    bytes_free(&ciphertext);
+    bytes_free(&plaintext);
+    return status;
 }
 
 static int rsa_encrypt_key(const unsigned char key[16], struct bytes *encrypted)
@@ -534,7 +761,7 @@ out:
     return status;
 }
 
-static int run_self_test(void)
+static int run_login_cipher_self_test(void)
 {
     static const unsigned char key[16] = "0123456789abcdef";
     size_t length;
@@ -552,13 +779,113 @@ static int run_self_test(void)
             plaintext.len != length || memcmp(plaintext.data, input, length) != 0) {
             bytes_free(&ciphertext);
             bytes_free(&plaintext);
-            fprintf(stderr, "self-test failed at plaintext length %zu\n", length);
+            fprintf(stderr, "login cipher self-test failed at length %zu\n", length);
             return 1;
         }
         bytes_free(&ciphertext);
         bytes_free(&plaintext);
     }
-    puts("{\"success\":true,\"test\":\"adat-aes-roundtrip\"}");
+    return 0;
+}
+
+static EVP_PKEY *new_test_rsa_key(void)
+{
+    EVP_PKEY_CTX *ctx = NULL;
+    EVP_PKEY *key = NULL;
+
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (!ctx || EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 1024) <= 0 ||
+        EVP_PKEY_keygen(ctx, &key) <= 0) {
+        EVP_PKEY_free(key);
+        key = NULL;
+    }
+    EVP_PKEY_CTX_free(ctx);
+    return key;
+}
+
+static int run_adat_cipher_self_test(void)
+{
+    EVP_PKEY *rsa_key = NULL;
+    struct adat_session_keys keys = {{0}, {0}};
+    struct bytes wrapped_key = {0};
+    struct bytes wrapped_iv = {0};
+    struct bytes clear_key = {0};
+    struct bytes clear_iv = {0};
+    json_object *payload = NULL;
+    json_object *envelope = NULL;
+    json_object *outer = NULL;
+    json_object *decrypted = NULL;
+    json_object *value = NULL;
+    const char *payload_text;
+    int result = 1;
+
+    rsa_key = new_test_rsa_key();
+    payload = json_object_new_object();
+    if (!rsa_key || !payload)
+        goto out;
+    json_object_object_add(payload, "id", json_object_new_string("offline-test"));
+    json_object_object_add(payload, "value", json_object_new_int(7));
+    envelope = build_adat_envelope(payload, 3, rsa_key, &keys);
+    if (!envelope)
+        goto out;
+
+    if (!json_object_object_get_ex(envelope, "k", &value) ||
+        base64_decode(json_object_get_string(value), &wrapped_key) != 0 ||
+        rsa_decrypt_value(rsa_key, wrapped_key.data, wrapped_key.len,
+                          &clear_key) != 0 ||
+        clear_key.len != sizeof(keys.key) ||
+        CRYPTO_memcmp(clear_key.data, keys.key, sizeof(keys.key)) != 0)
+        goto out;
+    if (!json_object_object_get_ex(envelope, "i", &value) ||
+        base64_decode(json_object_get_string(value), &wrapped_iv) != 0 ||
+        rsa_decrypt_value(rsa_key, wrapped_iv.data, wrapped_iv.len,
+                          &clear_iv) != 0 ||
+        clear_iv.len != sizeof(keys.iv) ||
+        CRYPTO_memcmp(clear_iv.data, keys.iv, sizeof(keys.iv)) != 0)
+        goto out;
+
+    outer = json_object_new_object();
+    if (!outer || !json_object_object_get_ex(envelope, "d", &value))
+        goto out;
+    json_object_object_add(outer, "c", json_object_new_int(0));
+    json_object_object_add(outer, "d", json_object_get(value));
+    if (decrypt_adat_response(outer, &keys, &decrypted) != 0)
+        goto out;
+    payload_text = json_object_to_json_string_ext(payload, JSON_C_TO_STRING_PLAIN);
+    if (strcmp(payload_text,
+               json_object_to_json_string_ext(decrypted,
+                                              JSON_C_TO_STRING_PLAIN)) != 0)
+        goto out;
+    json_object_put(decrypted);
+    decrypted = NULL;
+
+    json_object_object_add(outer, "c", json_object_new_int(2));
+    if (decrypt_adat_response(outer, &keys, &decrypted) != 2 || decrypted)
+        goto out;
+    result = 0;
+
+out:
+    if (result != 0)
+        fputs("ADAT cipher self-test failed\n", stderr);
+    OPENSSL_cleanse(&keys, sizeof(keys));
+    bytes_free(&wrapped_key);
+    bytes_free(&wrapped_iv);
+    bytes_free(&clear_key);
+    bytes_free(&clear_iv);
+    json_object_put(decrypted);
+    json_object_put(outer);
+    json_object_put(envelope);
+    json_object_put(payload);
+    EVP_PKEY_free(rsa_key);
+    return result;
+}
+
+static int run_self_test(void)
+{
+    if (run_login_cipher_self_test() != 0 || run_adat_cipher_self_test() != 0)
+        return 1;
+    puts("{\"success\":true,\"tests\":[\"account-envelope\",\"acceleration-adat\"]}");
     return 0;
 }
 
@@ -576,7 +903,7 @@ static void usage(FILE *stream)
             "                    Exchange a login code for an account session\n"
             "  password-login LOGIN_NAME [AREA_CODE]\n"
             "                    Prompt privately for a password and log in\n"
-            "  self-test         Verify the local ADAT cipher implementation\n"
+            "  self-test         Verify both local cipher implementations\n"
             "  version           Print the program version\n");
 }
 

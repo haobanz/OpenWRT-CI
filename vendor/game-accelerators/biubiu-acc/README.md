@@ -7,22 +7,29 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods:
+envelope and three user-authorized login methods. Version 0.3.0 also adds an
+independent, offline-tested codec for the acceleration API's separate ADAT
+envelope:
 
-- ephemeral 16-byte AES-128-CBC key and IV;
+- one ephemeral 16-byte value used as the account AES key and IV;
 - service-specific padding used by the public login API;
 - RSA PKCS#1 v1.5 wrapping with the service's public key;
 - QR challenge creation, polling, and authorization-code exchange;
 - phone SMS code request and SMS code exchange;
 - TLS certificate and hostname verification enabled by default.
+- independent 16-byte AES key and IV for acceleration requests;
+- PKCS#7 AES-128-CBC payload protection and separate RSA wrapping of key/IV;
+- RSA key-version handling and an explicit key-rotation response state.
 
 The QR exchange, a user-authorized SMS exchange, and session refresh were
 verified against the production service on 2026-09-03. Password endpoint
 validation used deliberately invalid credentials; no password was retained.
 The reference lab tool persists and refreshes a session atomically without
-printing its credentials. Transport acceleration is not implemented in this
-milestone, so the package is built as an installable test artifact and is not
-installed in the firmware image yet.
+printing its credentials. The acceleration codec is validated offline with a
+generated RSA key; it does not embed the app's protected bootstrap value and
+does not contact the acceleration service during tests. Transport acceleration
+is not implemented in this milestone, so the package is built as an installable
+test artifact and is not installed in the firmware image yet.
 
 ## Usage
 

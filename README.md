@@ -15,7 +15,7 @@
 - PicoClaw、NullClaw、ZeroClaw 和统一的 Agent Hub LuCI 管理页
 - cloudflared 与自维护的多账号 Cloudflare Tunnel LuCI 管理页
 - 网易 UU 和雷神游戏加速器 LuCI 管理页
-- 实验性的 `biubiu-acc` 独立 APK（二维码已验证，短信/密码流程待账号授权）
+- 实验性的 `biubiu-acc` 独立 APK（二维码、短信登录及会话续期已验证）
 - `kmod-sched-bpf`、`kmod-xdp-sockets-diag`
 - 与目标内核匹配的 detached `vmlinux-btf`
 - 不包含 HomeProxy 和 sing-box
@@ -68,9 +68,10 @@ HTTP 端点，因此自维护包对已审核的文件强制固定 SHA-256，校�
 
 `biubiu-acc` 采用 clean-room 方式独立实现，只使用用户本人授权的账号会话，
 不分发厂商二进制，也不绕过会员、设备或区域校验。当前里程碑已打通二维码，
-并在路由器实机验证了手机短信验证码及隐藏密码登录接口；真实会话仍需账号本人
-完成一次授权。CI 只构建独立 APK，数据通道、指定 LAN 设备路由和 LuCI 管理页
-验证完成前不会预装进固件或接管流量。
+并验证了手机短信验证码登录与会话安全续期；隐藏密码登录接口也已实现。加速业务
+使用另一套独立 key/IV 的 ADAT 信封，当前已完成离线编解码和密钥轮换状态测试，
+但不内置应用保护区中的引导公钥。CI 只构建独立 APK，数据通道、指定 LAN 设备
+路由和 LuCI 管理页验证完成前不会预装进固件或接管流量。
 
 ## Agent Hub
 

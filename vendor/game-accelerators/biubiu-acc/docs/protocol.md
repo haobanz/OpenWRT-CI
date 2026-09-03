@@ -40,7 +40,38 @@ payload receives one `0x0a` marker followed by 1 to 16 bytes whose value is the
 number of repeated bytes. The encrypted response is returned in `d` and uses
 the same ephemeral key.
 
-Verified endpoints:
+## Observed acceleration ADAT envelope
+
+The acceleration API uses a different ADAT construction from the account
+service. Static call-graph and native-routine analysis, followed by an
+independent offline round trip, establish this request shape:
+
+```json
+{
+  "k": "base64(RSA-PKCS1-v1_5(aes_key))",
+  "v": 1,
+  "d": "base64(AES-128-CBC-PKCS7(payload, aes_key, iv))",
+  "i": "base64(RSA-PKCS1-v1_5(iv))"
+}
+```
+
+The AES key and IV are independently generated 16-byte values. Responses have
+an outer `c` status and `d` ciphertext. Status `c == 2` requests an RSA public
+key refresh and must not be treated as ciphertext.
+
+The initial RSA value is supplied to the Android SDK through its protected
+static-data provider. It is not copied into this repository. Rotated keys are
+returned as `version|base64(X.509 RSA public key)` by:
+
+```text
+https://gtm-main.biubiu001.com/client/1/config.getSecurityKey
+```
+
+The bootstrap request includes `df=adat`, `cver=1.0.0`, and `os=android`.
+The clean-room client will require an explicitly supplied bootstrap public key
+until a documented provider-independent bootstrap path is verified.
+
+## Verified account endpoints
 
 ```text
 capi/qrcodelogin.startQRCodeLogin
@@ -94,12 +125,13 @@ Windows process scanner on the accelerated machine.
 
 1. Port root-only session persistence and refresh from the reference lab to the
    OpenWrt service layer.
-2. Reproduce game list, game profile, entitlement check, and node selection.
-3. Decode signal login, heartbeat, and channel authorization responses.
-4. Implement the smallest compatible data channel, initially TCP and UDP,
+2. Add external bootstrap-key import and cached key rotation to the C service.
+3. Reproduce game list, game profile, entitlement check, and node selection.
+4. Decode signal login, heartbeat, and channel authorization responses.
+5. Implement the smallest compatible data channel, initially TCP and UDP,
    against user-authorized test sessions.
-5. Add nftables/TUN steering for one selected LAN IPv4 address.
-6. Add procd, ubus, LuCI, traffic counters, conflict checks, and rollback.
+6. Add nftables/TUN steering for one selected LAN IPv4 address.
+7. Add procd, ubus, LuCI, traffic counters, conflict checks, and rollback.
 
 The transport layer is not assumed to be ordinary HTTP, SOCKS, or a standard
 VPN. Known names such as Bolt, KCP, UOT, and FEC are treated only as clues

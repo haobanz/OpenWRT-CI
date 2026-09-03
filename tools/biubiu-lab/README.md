@@ -48,3 +48,16 @@ It never prints the device ID, session ID, refresh token, or Cookie values.
 it atomically only after the service returns a valid new session. The file
 contains live account material and must never be committed or attached to a
 bug report.
+
+`biubiu_adat_codec.py` is a network-free reference implementation of the
+separate acceleration ADAT envelope. Its tests generate a temporary RSA key,
+verify independent key/IV wrapping, AES round trips, key rotation handling, and
+invalid input rejection:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
+  -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
+```
+
+No vendor bootstrap key, account credential, or captured payload is used by
+these tests.

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.2.0
+PKG_VERSION:=0.3.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -21,8 +21,8 @@ endef
 
 define Package/biubiu-acc/description
   An independently implemented OpenWrt client for user-authorized biubiu
-  sessions. The current milestone implements verified QR and phone SMS login;
-  acceleration transport support is under active development.
+  sessions. The current milestone implements verified account login and the
+  separately observed acceleration ADAT envelope; transport is in development.
 endef
 
 define Build/Prepare

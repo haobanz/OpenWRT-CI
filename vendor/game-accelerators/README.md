@@ -29,9 +29,10 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.2.0 completes the QR handshake and implements phone SMS and hidden
-  password login. A user-authorized SMS exchange and subsequent session refresh
-  were verified against the production account service on 2026-09-03.
+- Version 0.3.0 completes the QR, phone SMS, hidden password, and session-refresh
+  account paths. It also adds an offline-tested codec for the acceleration
+  API's separate key/IV ADAT envelope without embedding its protected bootstrap
+  value.
 - CI builds it as a standalone APK, but it is not installed in the firmware
   until game profile, node selection, and transport steering have all passed
   router tests.
