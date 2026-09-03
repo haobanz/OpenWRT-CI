@@ -10,6 +10,7 @@ from typing import Iterable
 
 
 PROTOCOL_VERSION = 3
+DATA_HEADER_LENGTH = 11
 
 COMMAND_DATA = 0x11
 COMMAND_CONNECT_REQUEST = 0x22
@@ -133,6 +134,14 @@ class V3Response:
         } and self.status == STATUS_SUCCESS and self.connection_id != 0
 
 
+@dataclass(frozen=True)
+class V3Data:
+    session_id: int
+    connection_id: int
+    payload: bytes = field(default=b"", repr=False)
+    flags: int = 0
+
+
 def _extension_bytes(
     extensions: Iterable[Extension],
 ) -> tuple[tuple[Extension, ...], bytes]:
@@ -183,6 +192,26 @@ def encode_v3_request(
     return header + encoded_extensions + payload
 
 
+def encode_v3_data(session_id: int, connection_id: int, payload: bytes) -> bytes:
+    """Encode the fixed 11-byte header used by observed v3 data frames."""
+
+    session_id = _u32(session_id, "session ID")
+    connection_id = _u16(connection_id, "connection ID")
+    payload = _bytes(payload, "payload")
+    total_length = DATA_HEADER_LENGTH + len(payload)
+    if total_length > 0xFFFF:
+        raise ValueError("Bolt v3 frame is too long")
+    return struct.pack(
+        ">BBHBIH",
+        PROTOCOL_VERSION,
+        DATA_HEADER_LENGTH,
+        total_length,
+        COMMAND_DATA,
+        session_id,
+        connection_id,
+    ) + payload
+
+
 def _frame(value: object, minimum_header: int) -> tuple[bytes, int, int, int]:
     data = _bytes(value, "frame")
     if len(data) < minimum_header:
@@ -222,6 +251,8 @@ def _parse_extensions(
 def parse_v3_request(value: object) -> V3Request:
     data, flags, header_length, total_length = _frame(value, 10)
     command = data[4]
+    if command not in REQUEST_COMMANDS:
+        raise ValueError("unsupported Bolt v3 request command")
     session_id = struct.unpack_from(">I", data, 5)[0]
     count = data[9]
     extensions = _parse_extensions(data, 10, header_length, count)
@@ -234,8 +265,37 @@ def parse_v3_request(value: object) -> V3Request:
     )
 
 
+def parse_v3_data(value: object) -> V3Data:
+    """Parse the fixed data shape shared by the observed write/read paths."""
+
+    data, flags, header_length, total_length = _frame(value, DATA_HEADER_LENGTH)
+    if data[4] != COMMAND_DATA:
+        raise ValueError("not a Bolt v3 data frame")
+    if header_length != DATA_HEADER_LENGTH:
+        raise ValueError("invalid Bolt v3 data header length")
+    return V3Data(
+        session_id=struct.unpack_from(">I", data, 5)[0],
+        connection_id=struct.unpack_from(">H", data, 9)[0],
+        payload=data[header_length:total_length],
+        flags=flags,
+    )
+
+
 def parse_v3_response(value: object) -> V3Response:
     """Parse the response shape consumed by the observed Android engine."""
+
+    raw = _bytes(value, "frame")
+    if len(raw) >= 5 and raw[4] == COMMAND_DATA:
+        frame = parse_v3_data(raw)
+        return V3Response(
+            command=COMMAND_DATA,
+            session_id=frame.session_id,
+            connection_id=frame.connection_id,
+            status=None,
+            extensions=(),
+            payload=frame.payload,
+            flags=frame.flags,
+        )
 
     data, flags, header_length, total_length = _frame(value, 12)
     command = data[4]

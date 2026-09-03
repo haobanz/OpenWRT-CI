@@ -81,19 +81,29 @@ class BoltModelTests(unittest.TestCase):
         zero_connection[9:11] = b"\x00\x00"
         self.assertFalse(bolt.parse_v3_response(bytes(zero_connection)).successful)
 
-    def test_data_response_has_no_status_byte(self) -> None:
-        frame = struct.pack(
-            ">BBHB I H B",
-            bolt.PROTOCOL_VERSION,
-            12,
-            12,
-            bolt.COMMAND_DATA,
-            9,
-            4,
-            0,
+    def test_data_frame_matches_verified_layout(self) -> None:
+        marker = b"\xde\xad\xbe\xef"
+        frame = bolt.encode_v3_data(
+            session_id=0x01020304,
+            connection_id=0x1234,
+            payload=marker,
         )
+
+        self.assertEqual(
+            frame,
+            bytes.fromhex("03 0b 000f 11 01020304 1234 deadbeef"),
+        )
+
+        data = bolt.parse_v3_data(frame)
+        self.assertEqual(data.session_id, 0x01020304)
+        self.assertEqual(data.connection_id, 0x1234)
+        self.assertEqual(data.payload, marker)
+        self.assertNotIn(marker.hex(), repr(data))
+
         parsed = bolt.parse_v3_response(frame)
         self.assertIsNone(parsed.status)
+        self.assertEqual(parsed.extensions, ())
+        self.assertEqual(parsed.payload, marker)
         self.assertFalse(parsed.successful)
 
     def test_opaque_values_are_not_rendered(self) -> None:
@@ -135,6 +145,17 @@ class BoltModelTests(unittest.TestCase):
             bolt.Extension.endpoint(6, bolt.Endpoint("192.0.2.1", 443))
         with self.assertRaises(ValueError):
             bolt.Extension(1, b"x" * 256)
+        with self.assertRaises(ValueError):
+            bolt.encode_v3_data(1, 1, b"x" * (0x10000 - 10))
+        with self.assertRaises(ValueError):
+            bolt.parse_v3_data(
+                bolt.encode_v3_request(bolt.COMMAND_CONNECT_REQUEST, 1)
+            )
+
+        data = bytearray(bolt.encode_v3_data(1, 2, b"payload"))
+        data[1] = 12
+        with self.assertRaises(ValueError):
+            bolt.parse_v3_data(bytes(data))
 
 
 if __name__ == "__main__":

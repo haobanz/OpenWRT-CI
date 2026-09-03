@@ -242,6 +242,26 @@ for both connect and associate responses. The verified command values are:
 0x27  error response
 ```
 
+The dedicated `0x11` write path is now independently confirmed. It uses an
+exactly 11-byte header with no extension count or result byte:
+
+```text
+0      u8   protocol version (3)
+1      u8   header length (11)
+2      u16  total frame length
+4      u8   command (0x11)
+5      u32  signal session value
+9      u16  connection value
+11     ...  packet payload
+```
+
+The builder allocates `payload length + 11`, writes every integer in network
+byte order, and copies the payload unchanged at offset 11. The receive path
+dispatches command `0x11` using the payload pointer and length derived from
+those two frame lengths. No XOR or cipher operation has yet been attributed to
+this frame builder, so payload transformation remains a separate unresolved
+boundary.
+
 Header length separates extension metadata from an optional payload; total
 length bounds the complete frame. The offline model validates both lengths and
 rejects truncated or surplus extension bytes. It intentionally does not assign
