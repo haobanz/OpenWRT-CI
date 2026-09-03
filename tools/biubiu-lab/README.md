@@ -83,6 +83,15 @@ completion command-specific and requires the returned connection ID to be
 non-zero. Opaque values and payloads are excluded from representations, and
 the module has no networking code.
 
+`biubiu_match_model.py` compiles the selected built-in game profiles into a
+bounded match plan for the whole LAN or one IPv4 device. Steam/Counter-Strike
+uses the official Steamworks port hints and explicitly excludes content/CDN
+domains; Epic Games remains provider-profile-only because its official port
+list is too broad for safe automatic matching. The model is network-free and
+does not install firewall rules or claim that traffic is accelerated. The
+OpenWrt package currently stores the plan as management state while the
+provider data-plane handoff remains incomplete.
+
 `biubiu_heartbeat_model.py` models the direct signal heartbeat without opening
 a socket. It builds the observed inner payload, `x-biu-client` header and outer
 POST body, reproduces AES-128-CBC/PKCS7 with Android Base64 formatting, and

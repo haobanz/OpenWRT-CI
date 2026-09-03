@@ -6,6 +6,7 @@
 CONFIG='biubiu-acc'
 CLI='/usr/bin/biubiu-accctl'
 INIT='/etc/init.d/biubiu-acc'
+CATALOG_FILE='/usr/share/biubiu-acc/game-catalog.json'
 RUNTIME_ROOT='/tmp/biubiu-acc'
 REQUEST_FILE="$RUNTIME_ROOT/request.json"
 LOCK_DIR="$RUNTIME_ROOT/request.lock"
@@ -109,6 +110,24 @@ valid_mac() {
 	[ -z "$1" ] || printf '%s' "$1" | grep -Eqi '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
 }
 
+valid_game_slug() {
+	local value="$1" length
+	case "$value" in ''|-*|*-|*[!a-z0-9-]*) return 1 ;; esac
+	length="$(printf '%s' "$value" | wc -c)"
+	[ "$length" -le 64 ]
+}
+
+catalog_has_game() {
+	local game="$1"
+	[ -f "$CATALOG_FILE" ] && [ ! -L "$CATALOG_FILE" ] || return 1
+	jsonfilter -i "$CATALOG_FILE" -e '@.profiles[*].id' 2>/dev/null |
+		grep -Fxq "$game"
+}
+
+print_selected_game() {
+	valid_game_slug "$1" && printf '%s\n' "$1"
+}
+
 json_field() {
 	jsonfilter -s "$1" -e "@.$2" 2>/dev/null | head -n 1
 }
@@ -119,6 +138,10 @@ uci_get() {
 
 request_value() {
 	jsonfilter -i "$REQUEST_FILE" -e "@.$1" 2>/dev/null | head -n 1
+}
+
+request_values() {
+	jsonfilter -i "$REQUEST_FILE" -e "@.$1[*]" 2>/dev/null
 }
 
 acquire_request() {
@@ -170,6 +193,7 @@ service_running() {
 snapshot() {
 	local version session_json key_json authenticated refreshable method cookies
 	local key_cached key_version key_bits fingerprint manager_enabled running phase message
+	local scope selected_games selected_game_count game
 	local target_name target_ip target_mac target_id area_id platform_id log_level
 	local pid rss uptime_seconds process_start boot_seconds clock_ticks
 
@@ -185,6 +209,11 @@ snapshot() {
 	key_bits="$(json_field "$key_json" rsaBits)"
 	fingerprint="$(json_field "$key_json" fingerprintSha256)"
 	manager_enabled="$(uci_get main manager_enabled 0)"
+	scope="$(uci_get main scope lan)"
+	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
+	config_load "$CONFIG"
+	selected_games="$(config_list_foreach main selected_game print_selected_game)"
+	selected_game_count="$(printf '%s\n' "$selected_games" | awk 'NF { count++ } END { print count + 0 }')"
 	target_name="$(uci_get main target_name '')"
 	target_ip="$(uci_get main target_ip '')"
 	target_mac="$(uci_get main target_mac '')"
@@ -217,7 +246,10 @@ snapshot() {
 	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
 		phase='account_required'
 		message='账号尚未登录'
-	elif [ -z "$target_ip" ]; then
+	elif [ "$selected_game_count" -eq 0 ] && [ -z "$target_id" ]; then
+		phase='game_required'
+		message='尚未选择加速游戏'
+	elif [ "$scope" = device ] && [ -z "$target_ip" ]; then
 		phase='target_required'
 		message='尚未选择加速设备'
 	elif [ "$(bool_value "$key_cached")" -ne 1 ]; then
@@ -252,6 +284,12 @@ snapshot() {
 	json_add_string fingerprint_sha256 "$fingerprint"
 	json_close_object
 	json_add_object config
+	json_add_string scope "$scope"
+	json_add_array selected_games
+	for game in $selected_games; do
+		json_add_string '' "$game"
+	done
+	json_close_array
 	json_add_string target_name "$target_name"
 	json_add_string target_ip "$target_ip"
 	json_add_string target_mac "$target_mac"
@@ -263,7 +301,9 @@ snapshot() {
 	json_add_object capabilities
 	json_add_boolean account_login 1
 	json_add_boolean profile_storage 1
+	json_add_boolean builtin_catalog 1
 	json_add_boolean bolt_v3_codec 1
+	json_add_boolean automatic_matching 0
 	json_add_boolean control_api 0
 	json_add_boolean data_channel 0
 	json_add_boolean traffic_steering 0
@@ -272,8 +312,23 @@ snapshot() {
 	printf '\n'
 }
 
+show_catalog() {
+	if [ ! -f "$CATALOG_FILE" ] || [ -L "$CATALOG_FILE" ]; then
+		printf 'game catalog is not installed\n' >&2
+		return 1
+	fi
+	jsonfilter -i "$CATALOG_FILE" -e '@.schema_version' >/dev/null 2>&1 || {
+		printf 'game catalog is invalid\n' >&2
+		return 1
+	}
+	cat "$CATALOG_FILE"
+}
+
 save_config() {
+	local scope requested_games selected_games game game_count
 	local target_name target_ip target_mac target_id area_id platform_id log_level
+	scope="$(request_value scope)"
+	requested_games="$(request_values selected_games)"
 	target_name="$(request_value target_name)"
 	target_ip="$(request_value target_ip)"
 	target_mac="$(request_value target_mac)"
@@ -281,6 +336,17 @@ save_config() {
 	area_id="$(request_value area_id)"
 	platform_id="$(request_value platform_id)"
 	log_level="$(request_value log_level)"
+	case "$scope" in lan|device) ;; *) fail '加速范围无效' ;; esac
+	selected_games=''
+	game_count=0
+	for game in $requested_games; do
+		valid_game_slug "$game" || fail '游戏选择无效'
+		catalog_has_game "$game" || fail '游戏不在内置目录中'
+		case " $selected_games " in *" $game "*) continue ;; esac
+		game_count=$((game_count + 1))
+		[ "$game_count" -le 16 ] || fail '最多选择 16 个游戏'
+		selected_games="${selected_games}${selected_games:+ }$game"
+	done
 	[ -z "$target_name" ] || safe_text "$target_name" 64 || fail '设备名称无效'
 	[ -z "$target_ip" ] || valid_ipv4 "$target_ip" || fail '设备 IPv4 地址无效'
 	valid_mac "$target_mac" || fail '设备 MAC 地址无效'
@@ -290,6 +356,12 @@ save_config() {
 	case "$log_level" in debug|info|warn|error) ;; *) fail '日志级别无效' ;; esac
 
 	uci -q set "$CONFIG.main=biubiu_acc"
+	uci -q set "$CONFIG.main.schema_version=2"
+	uci -q set "$CONFIG.main.scope=$scope"
+	uci -q delete "$CONFIG.main.selected_game" 2>/dev/null || true
+	for game in $selected_games; do
+		uci -q add_list "$CONFIG.main.selected_game=$game" || fail '保存游戏选择失败'
+	done
 	uci -q set "$CONFIG.main.target_name=$target_name"
 	uci -q set "$CONFIG.main.target_ip=$target_ip"
 	uci -q set "$CONFIG.main.target_mac=$target_mac"
@@ -299,7 +371,7 @@ save_config() {
 	uci -q set "$CONFIG.main.log_level=$log_level"
 	uci -q commit "$CONFIG" || fail '保存配置失败'
 	$INIT reload >/dev/null 2>&1 || true
-	log_event info config "Saved target ${target_ip:-none}"
+	log_event info config "Saved scope $scope, $game_count game selections, target ${target_ip:-none}"
 	emit_message '设备与加速配置已保存'
 }
 
@@ -427,7 +499,8 @@ prepare_dirs
 
 case "${1:-}" in
 	snapshot) snapshot ;;
+	catalog) show_catalog ;;
 	request) handle_request ;;
 	logs) show_logs ;;
-	*) printf 'Usage: biubiu-acc-manager {snapshot|request|logs}\n' >&2; exit 2 ;;
+	*) printf 'Usage: biubiu-acc-manager {snapshot|catalog|request|logs}\n' >&2; exit 2 ;;
 esac

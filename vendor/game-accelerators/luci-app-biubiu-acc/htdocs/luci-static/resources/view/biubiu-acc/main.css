@@ -116,6 +116,65 @@
 	margin-bottom: 16px;
 }
 
+.bba-callout-info {
+	border-left-color: var(--bba-cyan);
+	background: rgba(8, 127, 140, .08);
+}
+
+.bba-scope-row,
+.bba-segmented {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.bba-segmented {
+	gap: 2px;
+	padding: 3px;
+	border: 1px solid var(--bba-border);
+	background: var(--bba-panel);
+}
+
+.bba-segmented .cbi-button {
+	margin: 0;
+	min-height: 36px;
+}
+
+.bba-game-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(220px, 1fr));
+	gap: 10px;
+	width: min(780px, 100%);
+}
+
+.bba-game-option {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr);
+	align-items: start;
+	gap: 10px;
+	padding: 12px;
+	border: 1px solid var(--bba-border);
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.bba-game-option input {
+	margin: 3px 0 0;
+}
+
+.bba-game-option strong,
+.bba-game-option small {
+	display: block;
+	overflow-wrap: anywhere;
+}
+
+.bba-game-option small {
+	margin-top: 4px;
+	color: var(--bba-muted);
+	line-height: 1.4;
+}
+
 .bba-table-wrap {
 	overflow-x: auto;
 	border: 1px solid var(--bba-border);
@@ -227,4 +286,7 @@
 	.bba-form label { margin-bottom: -7px; }
 	.bba-actions { width: 100%; }
 	.bba-actions .cbi-button { flex: 1 1 auto; }
+	.bba-game-grid { grid-template-columns: 1fr; }
+	.bba-segmented { width: 100%; }
+	.bba-segmented .cbi-button { flex: 1 1 0; }
 }

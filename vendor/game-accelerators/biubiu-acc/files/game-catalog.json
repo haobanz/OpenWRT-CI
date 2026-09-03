@@ -1,0 +1,51 @@
+{
+	"schema_version": 1,
+	"catalog_version": "2026.09.03",
+	"profiles": [
+		{
+			"id": "steam",
+			"name": "Steam 通用游戏",
+			"category": "platform",
+			"match_mode": "provider-profile-plus-hints",
+			"description": "Steam 登录、联机与 Steamworks 游戏流量",
+			"identity_dns_suffixes": [
+				"steampowered.com",
+				"steamcommunity.com",
+				"steamgames.com"
+			],
+			"excluded_dns_suffixes": [
+				"steamusercontent.com",
+				"steamcontent.com",
+				"steamstatic.com",
+				"akamaihd.net"
+			],
+			"tcp_destination_ports": [ "27015-27050" ],
+			"udp_destination_ports": [ "3478", "4379-4380", "27000-27250" ],
+			"source": "https://help.steampowered.com/en/faqs/view/2EA8-4D75-DA21-31EB"
+		},
+		{
+			"id": "counter-strike-2",
+			"name": "Counter-Strike 2 / CSGO",
+			"category": "game",
+			"match_mode": "provider-profile-plus-hints",
+			"description": "Counter-Strike 与 Source 服务器游戏流量",
+			"identity_dns_suffixes": [],
+			"excluded_dns_suffixes": [],
+			"tcp_destination_ports": [ "27015-27050" ],
+			"udp_destination_ports": [ "27000-27250" ],
+			"source": "https://help.steampowered.com/en/faqs/view/2EA8-4D75-DA21-31EB"
+		},
+		{
+			"id": "epic-games",
+			"name": "Epic Games",
+			"category": "platform",
+			"match_mode": "provider-profile",
+			"description": "Epic 账号、启动器与游戏配置",
+			"identity_dns_suffixes": [ "epicgames.com", "ol.epicgames.com" ],
+			"excluded_dns_suffixes": [],
+			"tcp_destination_ports": [],
+			"udp_destination_ports": [],
+			"source": "https://www.epicgames.com/help/c-202300000001619/c-202300000001672/quels-domaines-doivent-etre-mis-sur-liste-blanche-pour-acceder-aux-serveurs-epic-a202300000012358?lang=en-US"
+		}
+	]
+}

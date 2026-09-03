@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-biubiu-acc
-PKG_VERSION:=0.6.0
+PKG_VERSION:=0.7.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -18,8 +18,8 @@ define Package/luci-app-biubiu-acc
 endef
 
 define Package/luci-app-biubiu-acc/description
-  LuCI interface for account sessions, LAN target selection, preflight state,
-  diagnostics, and staged acceleration profile management.
+  LuCI interface for account sessions, whole-LAN or device scope, built-in game
+  selection, diagnostics, and staged acceleration profile management.
 endef
 
 define Build/Compile

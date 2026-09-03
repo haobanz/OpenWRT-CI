@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.6.0
+PKG_VERSION:=0.7.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -53,6 +53,9 @@ define Package/biubiu-acc/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/biubiu-acc-manager $(1)/usr/libexec/biubiu-acc-manager
 	$(INSTALL_BIN) ./files/biubiu-acc-supervisor $(1)/usr/libexec/biubiu-acc-supervisor
+	$(INSTALL_DIR) $(1)/usr/share/biubiu-acc
+	$(INSTALL_DATA) ./files/game-catalog.json \
+		$(1)/usr/share/biubiu-acc/game-catalog.json
 	$(INSTALL_DIR) $(1)/etc/biubiu-acc
 	chmod 0700 $(1)/etc/biubiu-acc
 	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
@@ -66,6 +69,15 @@ define Package/biubiu-acc/postinst
 	mkdir -p /etc/biubiu-acc
 	chmod 0700 /etc/biubiu-acc
 	chmod 0600 /etc/config/biubiu-acc 2>/dev/null || true
+	if [ "$$(uci -q get biubiu-acc.main.schema_version)" != 2 ]; then
+		uci -q set biubiu-acc.main.scope=lan
+		uci -q delete biubiu-acc.main.selected_game 2>/dev/null || true
+		uci -q add_list biubiu-acc.main.selected_game=steam
+		uci -q add_list biubiu-acc.main.selected_game=counter-strike-2
+		uci -q add_list biubiu-acc.main.selected_game=epic-games
+		uci -q set biubiu-acc.main.schema_version=2
+		uci -q commit biubiu-acc
+	fi
 	/etc/init.d/biubiu-acc enable >/dev/null 2>&1 || true
 }
 exit 0

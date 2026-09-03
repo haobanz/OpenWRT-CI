@@ -26,6 +26,7 @@ const callDHCPLeases = rpc.declare({
 let appNode = null;
 let activeTab = 'overview';
 let snapshot = { config: {}, session: {}, acceleration_key: {}, capabilities: {} };
+let catalog = { profiles: [] };
 let devices = [];
 let logText = '';
 
@@ -47,6 +48,14 @@ function parseJSONCommand(res, fallback) {
 function getSnapshot() {
 	return fs.exec(COMMAND, [ 'snapshot' ]).then(function(res) {
 		return parseJSONCommand(res, _('无法读取 biubiu 状态'));
+	});
+}
+
+function getCatalog() {
+	return fs.exec(COMMAND, [ 'catalog' ]).then(function(res) {
+		const result = parseJSONCommand(res, _('无法读取内置游戏目录'));
+		result.profiles = Array.isArray(result.profiles) ? result.profiles : [];
+		return result;
 	});
 }
 
@@ -125,6 +134,8 @@ function saveConfig(changes) {
 	const current = snapshot.config || {};
 	const payload = {
 		operation: 'save_config',
+		scope: current.scope || 'lan',
+		selected_games: Array.isArray(current.selected_games) ? current.selected_games.slice() : [],
 		target_name: current.target_name || '',
 		target_ip: current.target_ip || '',
 		target_mac: current.target_mac || '',
@@ -300,8 +311,55 @@ function showDeviceModal(device) {
 			button(_('保存'), 'cbi-button-positive', function(ev) {
 				return withBusy(ev, function() {
 					return saveConfig({
+						scope: 'device',
 						target_name: name.value.trim(), target_ip: ip.value.trim(),
 						target_mac: mac.value.trim().toLowerCase()
+					}).then(ui.hideModal);
+				});
+			})
+		])
+	]);
+}
+
+function profileMap() {
+	const result = Object.create(null);
+	(catalog.profiles || []).forEach(function(profile) { result[profile.id] = profile; });
+	return result;
+}
+
+function showGameModal() {
+	const current = snapshot.config || {};
+	const selected = Object.create(null);
+	const choices = [];
+	(Array.isArray(current.selected_games) ? current.selected_games : []).forEach(function(id) {
+		selected[id] = true;
+	});
+	const rows = (catalog.profiles || []).map(function(profile) {
+		const checkbox = E('input', {
+			type: 'checkbox',
+			checked: selected[profile.id] ? 'checked' : null
+		});
+		choices.push({ id: profile.id, checkbox: checkbox });
+		return E('label', { 'class': 'bba-game-option' }, [
+			checkbox,
+			E('span', {}, [
+				E('strong', {}, profile.name || profile.id),
+				E('small', {}, profile.description || '')
+			])
+		]);
+	});
+	ui.showModal(_('选择内置游戏'), [
+		rows.length
+			? E('div', { 'class': 'bba-game-grid' }, rows)
+			: E('div', { 'class': 'bba-empty' }, _('内置游戏目录不可用')),
+		modalActions([
+			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
+			button(_('保存选择'), 'cbi-button-positive', function(ev) {
+				return withBusy(ev, function() {
+					return saveConfig({
+						selected_games: choices.filter(function(choice) {
+							return choice.checkbox.checked;
+						}).map(function(choice) { return choice.id; })
 					}).then(ui.hideModal);
 				});
 			})
@@ -320,7 +378,7 @@ function showProfileModal() {
 	game.setAttribute('inputmode', 'numeric');
 	area.setAttribute('inputmode', 'numeric');
 	platform.setAttribute('inputmode', 'numeric');
-	ui.showModal(_('编辑加速配置'), [
+	ui.showModal(_('高级设置'), [
 		fieldRows([
 			[ _('游戏 ID'), game ],
 			[ _('区服 ID'), area ],
@@ -344,6 +402,9 @@ function showProfileModal() {
 function renderOverview() {
 	const session = snapshot.session || {};
 	const config = snapshot.config || {};
+	const scopeText = config.scope === 'device'
+		? (config.target_name || config.target_ip || _('未选择设备'))
+		: _('整个局域网');
 	const managerText = snapshot.manager_running
 		? _('运行中') + (snapshot.rss_kb ? ' · ' + (snapshot.rss_kb / 1024).toFixed(1) + ' MB' : '')
 		: (snapshot.manager_enabled ? _('启动异常') : _('已停止'));
@@ -351,9 +412,11 @@ function renderOverview() {
 	const capabilityRows = [
 		[ _('账号登录与私有会话'), capabilities.account_login ],
 		[ _('设备与配置存储'), capabilities.profile_storage ],
+		[ _('内置游戏目录'), capabilities.builtin_catalog ],
 		[ _('Bolt v3 帧编解码'), capabilities.bolt_v3_codec ],
 		[ _('加速控制 API'), capabilities.control_api ],
 		[ _('TCP/UDP 数据通道'), capabilities.data_channel ],
+		[ _('自动游戏流量匹配'), capabilities.automatic_matching ],
 		[ _('nftables 流量接管'), capabilities.traffic_steering ]
 	].map(function(item) {
 		return E('tr', {}, [ E('td', {}, item[0]), E('td', {}, item[1] ? badge(_('已实现'), 'ok') : badge(_('开发中'), 'warn')) ]);
@@ -362,7 +425,7 @@ function renderOverview() {
 		E('div', { 'class': 'bba-callout' }, snapshot.phase_message || _('等待配置')),
 		E('div', { 'class': 'bba-stat-grid' }, [
 			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('账号')), E('strong', {}, session.authenticated ? _('已登录') : _('未登录')) ]),
-			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('目标设备')), E('strong', {}, config.target_name || config.target_ip || _('未选择')) ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('加速范围')), E('strong', {}, scopeText) ]),
 			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('管理服务')), E('strong', {}, managerText) ]),
 			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('流量状态')), E('strong', {}, snapshot.accelerating ? _('已接管') : _('未接管')) ])
 		]),
@@ -407,16 +470,19 @@ function renderAccount() {
 function renderDevices() {
 	const config = snapshot.config || {};
 	const rows = devices.map(function(device) {
-		const selected = config.target_ip === device.ip && (!config.target_mac || config.target_mac === device.mac);
+		const selected = config.scope === 'device' && config.target_ip === device.ip && (!config.target_mac || config.target_mac === device.mac);
 		return E('tr', {}, [
 			E('td', {}, [ E('strong', {}, device.name || _('未命名设备')), E('div', { 'class': 'bba-muted' }, device.active ? _('当前在线') : _('历史设备')) ]),
 			E('td', { 'class': 'bba-code' }, device.ip),
 			E('td', { 'class': 'bba-code' }, device.mac || '-'),
-			E('td', {}, selected ? badge(_('已选择'), 'ok') : button(_('选择'), 'cbi-button-neutral', function() { showDeviceModal(device); }))
+			E('td', {}, selected ? badge(_('正在使用'), 'ok') : button(_('用于加速'), 'cbi-button-neutral', function() { showDeviceModal(device); }))
 		]);
 	});
 	return E('div', {}, [
-		section(_('当前目标'), config.target_ip ? [
+		config.scope === 'lan'
+			? E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前作用于整个局域网，无需逐台选择设备。'))
+			: null,
+		section(_('指定设备'), config.target_ip ? [
 			button(_('清除选择'), 'cbi-button-negative', function(ev) {
 				return withBusy(ev, function() { return saveConfig({ target_name: '', target_ip: '', target_mac: '' }); });
 			})
@@ -434,9 +500,40 @@ function renderDevices() {
 
 function renderAcceleration() {
 	const config = snapshot.config || {};
+	const profiles = profileMap();
+	const selectedIds = Array.isArray(config.selected_games) ? config.selected_games : [];
+	const selectedRows = selectedIds.filter(function(id) { return profiles[id]; }).map(function(id) {
+		const profile = profiles[id];
+		const mode = profile.match_mode === 'provider-profile'
+			? _('服务端规则')
+			: _('服务端 + 本地特征');
+		return E('tr', {}, [
+			E('td', {}, E('strong', {}, profile.name || id)),
+			E('td', {}, profile.category === 'game' ? _('游戏') : _('平台')),
+			E('td', {}, mode),
+			E('td', {}, badge(_('已选择'), 'ok'))
+		]);
+	});
+	const scopeControl = E('div', { 'class': 'bba-segmented' }, [
+		button(_('整个局域网'), config.scope === 'lan' ? 'cbi-button-positive' : 'cbi-button-neutral', function(ev) {
+			return withBusy(ev, function() { return saveConfig({ scope: 'lan' }); });
+		}),
+		button(_('指定设备'), config.scope === 'device' ? 'cbi-button-positive' : 'cbi-button-neutral', function(ev) {
+			return withBusy(ev, function() { return saveConfig({ scope: 'device' }); });
+		})
+	]);
 	return E('div', {}, [
-		E('div', { 'class': 'bba-callout' }, _('数据通道尚未完成；当前版本不会修改 nftables，也不会接管目标设备流量。')),
-		section(_('加速参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
+		E('div', { 'class': 'bba-callout' }, _('数据通道尚未完成；当前版本不会修改 nftables，也不会接管任何 LAN 流量。')),
+		section(_('加速范围'), [], E('div', { 'class': 'bba-scope-row' }, [
+			scopeControl,
+			E('span', { 'class': 'bba-muted' }, config.scope === 'device'
+				? (config.target_name || config.target_ip || _('尚未选择设备'))
+				: _('整个局域网'))
+		])),
+		section(_('内置游戏'), [ button(_('选择游戏'), 'cbi-button-add', showGameModal) ], selectedRows.length
+			? table([ _('名称'), _('类型'), _('匹配来源'), _('状态') ], selectedRows)
+			: E('div', { 'class': 'bba-empty' }, _('尚未选择游戏'))),
+		section(_('高级参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
 			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, config.target_id || '-') ]),
 			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, config.area_id || '-') ]),
 			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, config.platform_id || '-') ]),
@@ -447,6 +544,7 @@ function renderAcceleration() {
 		], table([ _('状态'), _('结果') ], [
 			E('tr', {}, [ E('td', {}, _('控制 API')), E('td', {}, badge(_('开发中'), 'warn')) ]),
 			E('tr', {}, [ E('td', {}, _('Bolt 通道')), E('td', {}, badge(_('仅编解码完成'), 'info')) ]),
+			E('tr', {}, [ E('td', {}, _('游戏流量匹配')), E('td', {}, selectedRows.length ? badge(_('规则已选择'), 'info') : badge(_('未配置'), 'idle')) ]),
 			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, badge(_('未启用'), 'idle')) ])
 		]))
 	]);
@@ -528,8 +626,13 @@ return view.extend({
 	handleReset: null,
 
 	load: function() {
-		return Promise.all([ getSnapshot(), getDevices() ]).then(function(data) {
+		return Promise.all([
+			getSnapshot(),
+			getDevices(),
+			L.resolveDefault(getCatalog(), { profiles: [] })
+		]).then(function(data) {
 			snapshot = data[0];
+			catalog = data[2];
 			return data;
 		});
 	},

@@ -4,6 +4,7 @@
 		"read": {
 			"file": {
 				"/usr/libexec/biubiu-acc-manager snapshot": [ "exec" ],
+				"/usr/libexec/biubiu-acc-manager catalog": [ "exec" ],
 				"/usr/libexec/biubiu-acc-manager logs": [ "exec" ]
 			},
 			"ubus": {

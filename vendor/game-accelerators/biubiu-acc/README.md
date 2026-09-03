@@ -7,9 +7,10 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods. Version 0.6.0 adds the first
-OpenWrt management plane and moves the verified Bolt v3 frame boundary into
-the C client's offline self-test. The current implementation includes:
+envelope and three user-authorized login methods. Version 0.7.0 adds a bounded
+built-in game catalog and whole-LAN or selected-device scope to the OpenWrt
+management plane. The verified Bolt v3 frame boundary remains covered by the
+C client's offline self-test. The current implementation includes:
 
 - one ephemeral 16-byte value used as the account AES key and IV;
 - service-specific padding used by the public login API;
@@ -29,8 +30,13 @@ the C client's offline self-test. The current implementation includes:
   boundaries with command-specific success checks;
 - a disabled-by-default procd supervisor with explicit, truthful preflight
   states and no firewall or route mutations;
-- a LuCI page for SMS login, session renewal/removal, DHCP target selection,
-  profile IDs, public-key import, process status, self-test, and logs;
+- a LuCI page for SMS login, session renewal/removal, whole-LAN or DHCP target
+  scope, built-in Steam/CS2/Epic selection, optional profile IDs, public-key
+  import, process status, self-test, and logs;
+- a machine-readable catalog using official public Steam and Epic network
+  guidance; identity domains are separated from explicit content/CDN
+  exclusions, and broad generic web and Epic port ranges are not automatic
+  match hints;
 - a mode `0600` one-shot request boundary so the LuCI SMS code is read by the C
   client on stdin instead of appearing in a process argument.
 
@@ -93,6 +99,12 @@ biubiu-accctl session-clear
 paths for testing. The LuCI flow never places account credentials in UCI.
 Its entry is `Services -> biubiu accelerator`; the management supervisor is
 off by default and only evaluates local preflight state.
+
+Fresh installs default to whole-LAN scope with the Steam, Counter-Strike 2,
+and Epic Games catalog entries selected. Selecting a DHCP device switches the
+scope to that device. Upgrades from version 0.6.0 migrate once to this layout;
+later user choices, including an empty selection, are preserved. These values
+remain inert until the control and data planes are completed.
 
 The acceleration bootstrap is deliberately external. Prepare a root-owned,
 mode `0600` file containing the provider-compatible value in the exact form

@@ -20,8 +20,14 @@ bool_value() {
 	case "$1" in 1|true|yes|on) printf '1\n' ;; *) printf '0\n' ;; esac
 }
 
+print_selected_game() {
+	case "$1" in ''|-*|*-|*[!a-z0-9-]*) return 0 ;; esac
+	printf '%s\n' "$1"
+}
+
 write_state() {
 	local phase="$1" message="$2" session_json="$3" key_json="$4"
+	local scope="$5" selected_game_count="$6"
 	local authenticated key_cached target_ip target_name temp
 
 	authenticated="$(json_field "$session_json" authenticated)"
@@ -37,6 +43,8 @@ write_state() {
 	json_add_boolean accelerating 0
 	json_add_boolean authenticated "$(bool_value "$authenticated")"
 	json_add_boolean acceleration_key_cached "$(bool_value "$key_cached")"
+	json_add_string scope "$scope"
+	json_add_int selected_game_count "$selected_game_count"
 	json_add_string target_ip "$target_ip"
 	json_add_string target_name "$target_name"
 	json_add_int pid "$$"
@@ -66,12 +74,20 @@ while :; do
 	authenticated="$(json_field "$session_json" authenticated)"
 	key_cached="$(json_field "$key_json" cached)"
 	config_load "$CONFIG"
+	config_get scope main scope 'lan'
+	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
+	selected_games="$(config_list_foreach main selected_game print_selected_game)"
+	selected_game_count="$(printf '%s\n' "$selected_games" | awk 'NF { count++ } END { print count + 0 }')"
 	config_get target_ip main target_ip ''
+	config_get target_id main target_id ''
 
 	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
 		phase='account_required'
 		message='账号尚未登录'
-	elif [ -z "$target_ip" ]; then
+	elif [ "$selected_game_count" -eq 0 ] && [ -z "$target_id" ]; then
+		phase='game_required'
+		message='尚未选择加速游戏'
+	elif [ "$scope" = device ] && [ -z "$target_ip" ]; then
 		phase='target_required'
 		message='尚未选择加速设备'
 	elif [ "$(bool_value "$key_cached")" -ne 1 ]; then
@@ -82,7 +98,8 @@ while :; do
 		message='数据通道尚未完成，不会接管流量'
 	fi
 
-	write_state "$phase" "$message" "$session_json" "$key_json"
+	write_state "$phase" "$message" "$session_json" "$key_json" \
+		"$scope" "$selected_game_count"
 	if [ "$phase" != "$LAST_PHASE" ]; then
 		logger -t biubiu-acc "state changed to $phase"
 		LAST_PHASE="$phase"
