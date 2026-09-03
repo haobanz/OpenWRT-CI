@@ -20,7 +20,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.7.0"
+#define BIUBIU_ACC_VERSION "0.7.1"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
 #define MAX_STATE_SIZE (1024U * 1024U)

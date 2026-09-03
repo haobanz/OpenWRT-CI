@@ -237,19 +237,22 @@ Windows process scanner on the accelerated machine.
 
 ## OpenWrt management boundary
 
-Version 0.7.0 extends the procd/LuCI management plane with a whole-LAN or
-selected-device scope and a machine-readable Steam, Counter-Strike 2/CSGO, and
-Epic Games catalog. Raw game/area/platform identifiers remain available only
-as advanced overrides. Account credentials remain in root-only state files;
+Version 0.7.1 extends the procd/LuCI management plane with a whole-LAN or
+selected-device scope, a machine-readable Steam, Counter-Strike 2/CSGO, and
+Epic Games catalog, and a read-only conntrack matching view. Raw
+game/area/platform identifiers remain available only as advanced overrides.
+Account credentials remain in root-only state files;
 LuCI sends SMS codes through a mode `0600` one-shot request and the C client
 reads the code from stdin. UCI contains only scope, game selections, an
 optional LAN device, advanced identifiers, and log level.
 
-The supervisor evaluates local account, target, and acceleration-key state. It
-always reports `accelerating=false` and never creates a TUN device, nftables
-rule, policy route, or data-channel socket. This keeps management work testable
-while preventing an incomplete implementation from silently disrupting the
-router.
+The supervisor evaluates local account, target, and acceleration-key state. The
+matching command reads only IPv4 tuple/counter lines from
+/proc/net/nf_conntrack, using bounded built-in Steam/CS2 destination-port hints.
+It is diagnostic output, not a steering decision. The supervisor always reports
+`accelerating=false` and never creates a TUN device, nftables rule, policy
+route, or data-channel socket. This keeps management work testable while
+preventing an incomplete implementation from silently disrupting the router.
 
 ## Remaining milestones
 

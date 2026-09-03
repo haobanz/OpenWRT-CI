@@ -7,10 +7,11 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods. Version 0.7.0 adds a bounded
-built-in game catalog and whole-LAN or selected-device scope to the OpenWrt
-management plane. The verified Bolt v3 frame boundary remains covered by the
-C client's offline self-test. The current implementation includes:
+envelope and three user-authorized login methods. Version 0.7.1 adds a bounded
+built-in game catalog, whole-LAN or selected-device scope, and read-only
+conntrack matching diagnostics to the OpenWrt management plane. The verified
+Bolt v3 frame boundary remains covered by the C client's offline self-test. The
+current implementation includes:
 
 - one ephemeral 16-byte value used as the account AES key and IV;
 - service-specific padding used by the public login API;
@@ -33,6 +34,8 @@ C client's offline self-test. The current implementation includes:
 - a LuCI page for SMS login, session renewal/removal, whole-LAN or DHCP target
   scope, built-in Steam/CS2/Epic selection, optional profile IDs, public-key
   import, process status, self-test, and logs;
+- a read-only match-status view that samples IPv4 conntrack tuples against
+  bounded Steam/CS2 destination-port hints and reports packet/byte counters;
 - a machine-readable catalog using official public Steam and Epic network
   guidance; identity domains are separated from explicit content/CDN
   exclusions, and broad generic web and Epic port ranges are not automatic

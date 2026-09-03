@@ -29,7 +29,7 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.7.0 includes the completed QR, phone SMS, hidden password, and session-refresh
+- Version 0.7.1 includes the completed QR, phone SMS, hidden password, and session-refresh
   account paths in the OpenWrt C client. Device identity and account sessions
   use private persistent files, successful login output is redacted, and refresh
   replaces a session atomically. It also includes an offline-tested codec for
@@ -39,8 +39,10 @@ same time.
 - The CLI and LuCI management page are preinstalled and also published as
   standalone APKs. The built-in catalog exposes Steam, Counter-Strike 2/CSGO,
   and Epic Games without requiring raw IDs, with either whole-LAN or one-device
-  scope. The disabled-by-default supervisor reports account, scope, game, key,
-  and process state but cannot claim acceleration. Settings are staged without
+  scope. The LuCI page also exposes read-only conntrack matching diagnostics for
+  bounded Steam/CS2 port hints, including packet and byte counters. The
+  disabled-by-default supervisor reports account, scope, game, key, process,
+  and matching state but cannot claim acceleration. Settings are staged without
   changing nftables or routes.
 - The C self-test now includes the independently verified Bolt v3 request,
   response, and 11-byte data frame boundary. Control API calls, live channels,

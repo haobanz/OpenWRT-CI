@@ -43,6 +43,7 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         acl = (LUCI / "root/usr/share/rpcd/acl.d/luci-app-biubiu-acc.json").read_text()
         self.assertIn('"/usr/libexec/biubiu-acc-manager request"', acl)
         self.assertIn('"/usr/libexec/biubiu-acc-manager catalog"', acl)
+        self.assertIn('"/usr/libexec/biubiu-acc-manager match-status"', acl)
         self.assertNotIn('"/usr/bin/biubiu-accctl *"', acl)
         self.assertNotIn('"/bin/sh *"', acl)
 
@@ -50,6 +51,13 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         manager = (CORE / "files/biubiu-acc-manager").read_text()
         supervisor = (CORE / "files/biubiu-acc-supervisor").read_text()
         ui = (LUCI / "htdocs/luci-static/resources/view/biubiu-acc/main.js").read_text()
+        self.assertIn("CONNTRACK_FILE", manager)
+        self.assertIn("match-status) match_status", manager)
+        self.assertIn('printf "FLOW\\t%s', manager)
+        self.assertNotIn('printf "FLOW\\\\t%s', manager)
+        self.assertIn("getMatchStatus", ui)
+        self.assertIn("实时匹配", ui)
+        self.assertIn("activeTab === 'acceleration'", ui)
         self.assertIn("json_add_boolean data_plane_ready 0", manager)
         self.assertIn("json_add_boolean accelerating 0", manager)
         self.assertIn("json_add_boolean automatic_matching 0", manager)
@@ -58,7 +66,7 @@ class OpenWrtIntegrationTests(unittest.TestCase):
 
     def test_core_self_test_includes_bolt_v3(self) -> None:
         source = (CORE / "src/biubiu-accctl.c").read_text()
-        self.assertIn('#define BIUBIU_ACC_VERSION "0.7.0"', source)
+        self.assertIn('#define BIUBIU_ACC_VERSION "0.7.1"', source)
         self.assertIn("run_bolt_v3_self_test", source)
         self.assertIn('\\"bolt-v3-frame\\"', source)
 

@@ -7,6 +7,7 @@ CONFIG='biubiu-acc'
 CLI='/usr/bin/biubiu-accctl'
 INIT='/etc/init.d/biubiu-acc'
 CATALOG_FILE='/usr/share/biubiu-acc/game-catalog.json'
+CONNTRACK_FILE='/proc/net/nf_conntrack'
 RUNTIME_ROOT='/tmp/biubiu-acc'
 REQUEST_FILE="$RUNTIME_ROOT/request.json"
 LOCK_DIR="$RUNTIME_ROOT/request.lock"
@@ -126,6 +127,14 @@ catalog_has_game() {
 
 print_selected_game() {
 	valid_game_slug "$1" && printf '%s\n' "$1"
+}
+
+match_status_error() {
+	json_init
+	json_add_boolean available 0
+	json_add_string error "$1"
+	json_dump
+	printf '\n'
 }
 
 json_field() {
@@ -324,6 +333,205 @@ show_catalog() {
 	cat "$CATALOG_FILE"
 }
 
+match_status() {
+	local scope selected_games game target_ip lan_cidr tcp_ports udp_ports
+	local has_steam=0 has_cs2=0
+	local matches kind protocol source destination port packets bytes hints_available
+	local flow_count total_packets total_bytes sample_truncated
+
+	scope="$(uci_get main scope lan)"
+	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
+	config_load "$CONFIG"
+	selected_games="$(config_list_foreach main selected_game print_selected_game)"
+	target_ip="$(uci_get main target_ip '')"
+	if [ "$scope" = device ] && ! valid_ipv4 "$target_ip"; then
+		match_status_error '指定设备地址无效或尚未配置'
+		return 0
+	fi
+	if [ ! -r "$CONNTRACK_FILE" ] || [ -L "$CONNTRACK_FILE" ]; then
+		match_status_error '内核连接跟踪表不可用，请安装 conntrack 支持'
+		return 0
+	fi
+
+	# Keep automatic hints limited to the bounded built-in profiles. Provider
+	# profiles without local port hints remain visible but are not guessed here.
+	for game in $selected_games; do
+		case "$game" in
+			steam)
+				has_steam=1
+				;;
+			counter-strike-2)
+				has_cs2=1
+				;;
+		esac
+	done
+	tcp_ports=''
+	udp_ports=''
+	if [ "$has_steam" -eq 1 ] || [ "$has_cs2" -eq 1 ]; then
+		tcp_ports='27015-27050'
+	fi
+	if [ "$has_steam" -eq 1 ]; then
+		udp_ports='3478,4379-4380,27000-27250'
+	elif [ "$has_cs2" -eq 1 ]; then
+		udp_ports='27000-27250'
+	fi
+	lan_cidr="$(ip -4 addr show br-lan 2>/dev/null | awk '/inet / { print $2; exit }')"
+	if [ -z "$lan_cidr" ]; then
+		match_status_error '无法读取 br-lan 的 IPv4 网络'
+		return 0
+	fi
+
+	matches="$TEMP_PREFIX.matches"
+	awk -v scope="$scope" -v target="$target_ip" -v lan_cidr="$lan_cidr" \
+		-v tcp_ports="$tcp_ports" -v udp_ports="$udp_ports" '
+	function ip_number(text, parts, count, octet, number) {
+		count = split(text, parts, ".")
+		if (count != 4)
+			return -1
+		number = 0
+		for (octet = 1; octet <= 4; octet++) {
+			if (parts[octet] !~ /^[0-9]+$/ || parts[octet] < 0 || parts[octet] > 255)
+				return -1
+			number = number * 256 + parts[octet]
+		}
+		return number
+	}
+	function in_lan(address, cidr, network_parts, prefix, address_number, network_number, block, address_parts, network_address_parts) {
+		prefix = split(cidr, network_parts, "/") == 2 ? network_parts[2] : -1
+		if (prefix < 0 || prefix > 32)
+			return 0
+		address_number = ip_number(address, address_parts)
+		network_number = ip_number(network_parts[1], network_address_parts)
+		if (address_number < 0 || network_number < 0)
+			return 0
+		block = 2 ^ (32 - prefix)
+		return int(address_number / block) == int(network_number / block)
+	}
+	function port_in_list(value, specs, list, count, item, bounds) {
+		if (value !~ /^[0-9]+$/ || specs == "")
+			return 0
+		count = split(specs, list, ",")
+		for (item = 1; item <= count; item++) {
+			if (index(list[item], "-") > 0) {
+				split(list[item], bounds, "-")
+				if (value + 0 >= bounds[1] && value + 0 <= bounds[2])
+					return 1
+			} else if (value + 0 == list[item] + 0) {
+				return 1
+			}
+		}
+		return 0
+	}
+	$1 == "ipv4" {
+		protocol = $3
+		source = destination = port = packets = bytes = ""
+		for (field = 1; field <= NF; field++) {
+			if (source == "" && $field ~ /^src=/)
+				source = substr($field, 5)
+			else if (destination == "" && $field ~ /^dst=/)
+				destination = substr($field, 5)
+			else if (port == "" && $field ~ /^dport=/)
+				port = substr($field, 7)
+			else if (packets == "" && $field ~ /^packets=/)
+				packets = substr($field, 9)
+			else if (bytes == "" && $field ~ /^bytes=/)
+				bytes = substr($field, 7)
+		}
+		if (source == "" || destination == "" || port == "")
+			next
+		if (scope == "device" && source != target)
+			next
+		if (scope == "lan" && !in_lan(source, lan_cidr))
+			next
+		if ((protocol == "tcp" && port_in_list(port, tcp_ports)) ||
+			(protocol == "udp" && port_in_list(port, udp_ports))) {
+			matched++
+			total_packets += packets + 0
+			total_bytes += bytes + 0
+			if (sample < 64) {
+				printf "FLOW\t%s\t%s\t%s\t%s\t%s\t%s\n", protocol,
+					source, destination, port, packets + 0, bytes + 0
+				sample++
+			} else {
+				sample_truncated = 1
+			}
+		}
+	}
+	END {
+		printf "SUMMARY\t%d\t%d\t%d\t%d\n", matched + 0,
+			total_packets + 0, total_bytes + 0, sample_truncated + 0
+	}
+	' "$CONNTRACK_FILE" > "$matches" 2>/dev/null || {
+		rm -f "$matches"
+		match_status_error '读取内核连接跟踪表失败'
+		return 0
+	}
+
+	flow_count=0
+	total_packets=0
+	total_bytes=0
+	sample_truncated=0
+	json_init
+	json_add_boolean available 1
+	json_add_string scope "$scope"
+	json_add_array selected_games
+	for game in $selected_games; do
+		json_add_string '' "$game"
+	done
+	json_close_array
+	json_add_array tcp_ports
+	for port in $(printf '%s' "$tcp_ports" | tr ',' ' '); do
+		json_add_string '' "$port"
+	done
+	json_close_array
+	json_add_array udp_ports
+	for port in $(printf '%s' "$udp_ports" | tr ',' ' '); do
+		json_add_string '' "$port"
+	done
+	json_close_array
+	if [ -n "$tcp_ports$udp_ports" ]; then
+		hints_available=1
+	else
+		hints_available=0
+	fi
+	json_add_boolean hints_available "$hints_available"
+	json_add_array flows
+	while IFS="$(printf '\t')" read -r kind protocol source destination port packets bytes; do
+		case "$kind" in
+			FLOW)
+				json_add_object ''
+				json_add_string protocol "$protocol"
+				json_add_string source_ip "$source"
+				json_add_string destination_ip "$destination"
+				json_add_int destination_port "$port"
+				json_add_int packets "$packets"
+				json_add_int bytes "$bytes"
+				json_close_object
+				;;
+			SUMMARY)
+				flow_count="$protocol"
+				total_packets="$source"
+				total_bytes="$destination"
+				sample_truncated="$port"
+				;;
+			esac
+	done < "$matches"
+	json_close_array
+	case "$flow_count" in ''|*[!0-9]*) flow_count=0 ;; esac
+	case "$total_packets" in ''|*[!0-9]*) total_packets=0 ;; esac
+	case "$total_bytes" in ''|*[!0-9]*) total_bytes=0 ;; esac
+	case "$sample_truncated" in 1) ;; *) sample_truncated=0 ;; esac
+	json_add_int flow_count "$flow_count"
+	json_add_int packets "$total_packets"
+	json_add_int bytes "$total_bytes"
+	json_add_boolean sample_truncated "$sample_truncated"
+	json_add_boolean data_plane_ready 0
+	json_add_boolean traffic_steering 0
+	json_dump
+	printf '\n'
+	rm -f "$matches"
+}
+
 save_config() {
 	local scope requested_games selected_games game game_count
 	local target_name target_ip target_mac target_id area_id platform_id log_level
@@ -500,7 +708,8 @@ prepare_dirs
 case "${1:-}" in
 	snapshot) snapshot ;;
 	catalog) show_catalog ;;
+	match-status) match_status ;;
 	request) handle_request ;;
 	logs) show_logs ;;
-	*) printf 'Usage: biubiu-acc-manager {snapshot|catalog|request|logs}\n' >&2; exit 2 ;;
+	*) printf 'Usage: biubiu-acc-manager {snapshot|catalog|match-status|request|logs}\n' >&2; exit 2 ;;
 esac

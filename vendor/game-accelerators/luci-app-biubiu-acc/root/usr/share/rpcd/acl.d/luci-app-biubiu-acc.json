@@ -5,6 +5,7 @@
 			"file": {
 				"/usr/libexec/biubiu-acc-manager snapshot": [ "exec" ],
 				"/usr/libexec/biubiu-acc-manager catalog": [ "exec" ],
+				"/usr/libexec/biubiu-acc-manager match-status": [ "exec" ],
 				"/usr/libexec/biubiu-acc-manager logs": [ "exec" ]
 			},
 			"ubus": {

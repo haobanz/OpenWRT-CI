@@ -27,6 +27,7 @@ let appNode = null;
 let activeTab = 'overview';
 let snapshot = { config: {}, session: {}, acceleration_key: {}, capabilities: {} };
 let catalog = { profiles: [] };
+let matchStatus = { available: false, flows: [] };
 let devices = [];
 let logText = '';
 
@@ -55,6 +56,14 @@ function getCatalog() {
 	return fs.exec(COMMAND, [ 'catalog' ]).then(function(res) {
 		const result = parseJSONCommand(res, _('无法读取内置游戏目录'));
 		result.profiles = Array.isArray(result.profiles) ? result.profiles : [];
+		return result;
+	});
+}
+
+function getMatchStatus() {
+	return fs.exec(COMMAND, [ 'match-status' ]).then(function(res) {
+		const result = parseJSONCommand(res, _('无法读取实时匹配状态'));
+		result.flows = Array.isArray(result.flows) ? result.flows : [];
 		return result;
 	});
 }
@@ -109,8 +118,12 @@ function notifyError(err) {
 }
 
 function refreshView() {
-	return getSnapshot().then(function(next) {
-		snapshot = next;
+	return Promise.all([
+		getSnapshot(),
+		L.resolveDefault(getMatchStatus(), matchStatus)
+	]).then(function(data) {
+		snapshot = data[0];
+		matchStatus = data[1];
 		if (appNode)
 			dom.content(appNode, renderPage());
 	});
@@ -232,6 +245,24 @@ function formatDuration(value) {
 	if (minutes)
 		return '%d 分 %d 秒'.format(minutes, seconds % 60);
 	return '%d 秒'.format(seconds);
+}
+
+function formatNumber(value) {
+	const number = Number(value);
+	return isFinite(number) && number >= 0 ? String(Math.floor(number)) : '0';
+}
+
+function formatBytes(value) {
+	const number = Number(value);
+	if (!isFinite(number) || number < 0)
+		return '0 B';
+	if (number >= 1024 * 1024 * 1024)
+		return (number / (1024 * 1024 * 1024)).toFixed(1) + ' GiB';
+	if (number >= 1024 * 1024)
+		return (number / (1024 * 1024)).toFixed(1) + ' MiB';
+	if (number >= 1024)
+		return (number / 1024).toFixed(1) + ' KiB';
+	return formatNumber(number) + ' B';
 }
 
 function phaseBadge() {
@@ -533,6 +564,7 @@ function renderAcceleration() {
 		section(_('内置游戏'), [ button(_('选择游戏'), 'cbi-button-add', showGameModal) ], selectedRows.length
 			? table([ _('名称'), _('类型'), _('匹配来源'), _('状态') ], selectedRows)
 			: E('div', { 'class': 'bba-empty' }, _('尚未选择游戏'))),
+		renderMatchStatus(),
 		section(_('高级参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
 			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, config.target_id || '-') ]),
 			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, config.area_id || '-') ]),
@@ -548,6 +580,52 @@ function renderAcceleration() {
 			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, badge(_('未启用'), 'idle')) ])
 		]))
 	]);
+}
+
+function renderMatchStatus() {
+	const status = matchStatus || {};
+	const flows = Array.isArray(status.flows) ? status.flows : [];
+	const rows = flows.map(function(flow) {
+		return E('tr', {}, [
+			E('td', {}, String(flow.protocol || '').toUpperCase()),
+			E('td', { 'class': 'bba-code' }, flow.source_ip || '-'),
+			E('td', { 'class': 'bba-code' }, flow.destination_ip || '-'),
+			E('td', { 'class': 'bba-code' }, formatNumber(flow.destination_port)),
+			E('td', {}, formatNumber(flow.packets)),
+			E('td', {}, formatBytes(flow.bytes))
+		]);
+	});
+	let content;
+	if (!status.available) {
+		content = E('div', { 'class': 'bba-callout' }, status.error || _('实时匹配不可用'));
+	} else if (!status.hints_available) {
+		content = E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前所选目录没有可安全用于本地端口识别的提示；服务端规则仍未接入。'));
+	} else if (!rows.length) {
+		content = E('div', { 'class': 'bba-empty' }, _('暂未发现命中的游戏流量。打开游戏并进入联网/匹配页面后刷新。'));
+	} else {
+		content = table([ _('协议'), _('来源设备'), _('目标地址'), _('目标端口'), _('包数'), _('流量') ], rows);
+	}
+	if (status.sample_truncated)
+		content = E('div', {}, [ content, E('div', { 'class': 'bba-callout bba-callout-info' }, _('命中连接较多，仅显示前 64 条；顶部计数仍按全部连接统计。')) ]);
+	return section(_('实时匹配'), [
+		button(_('刷新'), 'cbi-button-neutral', function(ev) {
+			return withBusy(ev, function() {
+				return getMatchStatus().then(function(next) {
+					matchStatus = next;
+					if (appNode && activeTab === 'acceleration')
+						dom.content(appNode, renderPage());
+				});
+			});
+		})
+	], E('div', {}, [
+		E('div', { 'class': 'bba-stat-grid' }, [
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('命中连接')), E('strong', {}, status.available ? formatNumber(status.flow_count) : '-') ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('包数')), E('strong', {}, status.available ? formatNumber(status.packets) : '-') ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('流量')), E('strong', {}, status.available ? formatBytes(status.bytes) : '-') ]),
+			E('div', { 'class': 'bba-stat' }, [ E('span', { 'class': 'bba-muted' }, _('接管')), E('strong', {}, status.traffic_steering ? _('已启用') : _('未启用')) ])
+		]),
+		content
+	]));
 }
 
 function loadLogs() {
@@ -629,10 +707,12 @@ return view.extend({
 		return Promise.all([
 			getSnapshot(),
 			getDevices(),
-			L.resolveDefault(getCatalog(), { profiles: [] })
+			L.resolveDefault(getCatalog(), { profiles: [] }),
+			L.resolveDefault(getMatchStatus(), { available: false, flows: [] })
 		]).then(function(data) {
 			snapshot = data[0];
 			catalog = data[2];
+			matchStatus = data[3];
 			return data;
 		});
 	},
@@ -640,8 +720,12 @@ return view.extend({
 	render: function() {
 		appNode = E('div', {}, renderPage());
 		poll.add(function() {
-			return getSnapshot().then(function(next) {
-				snapshot = next;
+			const matchRequest = activeTab === 'acceleration'
+				? L.resolveDefault(getMatchStatus(), matchStatus)
+				: Promise.resolve(matchStatus);
+			return Promise.all([ getSnapshot(), matchRequest ]).then(function(data) {
+				snapshot = data[0];
+				matchStatus = data[1];
 				if (appNode && !document.querySelector('.modal'))
 					dom.content(appNode, renderPage());
 			}).catch(function() {});
