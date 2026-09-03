@@ -26,6 +26,10 @@ REQUEST_COMMANDS = frozenset({COMMAND_CONNECT_REQUEST, COMMAND_ASSOCIATE_REQUEST
 STATUS_COMMANDS = frozenset(
     {COMMAND_CONNECT_RESPONSE, COMMAND_ASSOCIATE_RESPONSE, COMMAND_ERROR}
 )
+RESPONSE_COMMAND_BY_REQUEST = {
+    COMMAND_CONNECT_REQUEST: COMMAND_CONNECT_RESPONSE,
+    COMMAND_ASSOCIATE_REQUEST: COMMAND_ASSOCIATE_RESPONSE,
+}
 ENDPOINT_EXTENSION_TYPES = frozenset({1, 2, 7})
 
 
@@ -132,6 +136,20 @@ class V3Response:
             COMMAND_CONNECT_RESPONSE,
             COMMAND_ASSOCIATE_RESPONSE,
         } and self.status == STATUS_SUCCESS and self.connection_id != 0
+
+    def successful_for(self, request_command: int) -> bool:
+        """Apply the command-specific completion rule used by the native engine."""
+
+        request_command = _u8(request_command, "request command")
+        try:
+            response_command = RESPONSE_COMMAND_BY_REQUEST[request_command]
+        except KeyError as exc:
+            raise ValueError("unsupported Bolt v3 request command") from exc
+        return (
+            self.command == response_command
+            and self.status == STATUS_SUCCESS
+            and self.connection_id != 0
+        )
 
 
 @dataclass(frozen=True)

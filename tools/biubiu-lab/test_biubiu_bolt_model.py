@@ -71,6 +71,8 @@ class BoltModelTests(unittest.TestCase):
 
         parsed = bolt.parse_v3_response(frame)
         self.assertTrue(parsed.successful)
+        self.assertTrue(parsed.successful_for(bolt.COMMAND_ASSOCIATE_REQUEST))
+        self.assertFalse(parsed.successful_for(bolt.COMMAND_CONNECT_REQUEST))
         self.assertEqual(parsed.connection_id, 0x1234)
         self.assertEqual(
             parsed.extensions[0].as_endpoint(), bolt.Endpoint("203.0.113.8", 27015)
@@ -80,6 +82,14 @@ class BoltModelTests(unittest.TestCase):
         zero_connection = bytearray(frame)
         zero_connection[9:11] = b"\x00\x00"
         self.assertFalse(bolt.parse_v3_response(bytes(zero_connection)).successful)
+        self.assertFalse(
+            bolt.parse_v3_response(bytes(zero_connection)).successful_for(
+                bolt.COMMAND_ASSOCIATE_REQUEST
+            )
+        )
+
+        with self.assertRaises(ValueError):
+            parsed.successful_for(bolt.COMMAND_DATA)
 
     def test_data_frame_matches_verified_layout(self) -> None:
         marker = b"\xde\xad\xbe\xef"

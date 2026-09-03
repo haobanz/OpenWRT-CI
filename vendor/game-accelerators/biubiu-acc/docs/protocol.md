@@ -305,6 +305,15 @@ for both connect and associate responses. The verified command values are:
 0x27  error response
 ```
 
+The native engine keeps TCP handshake and UDP association completion as
+separate state transitions. A connect request is completed only by command
+`0x23`; an associate request is completed only by command `0x25`. In both
+paths, result `0x22` and a non-zero 16-bit connection value are required before
+the corresponding ready flag is set. Each timeout callback first checks that
+ready flag and becomes a no-op after success. The offline model exposes the
+same command-specific acceptance rule so a response from one path cannot
+complete the other.
+
 The dedicated `0x11` write path is now independently confirmed. It uses an
 exactly 11-byte header with no extension count or result byte:
 

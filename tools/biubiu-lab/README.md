@@ -78,8 +78,10 @@ cannot print them. This parser does not implement or contact the data channel.
 boundary. It encodes connect/associate request headers and the fixed 11-byte
 associated-data header, parses synthetic response and data frames, and
 preserves typed length-value extensions and payloads. All integers use the
-verified network byte order. Opaque values and payloads are excluded from
-representations, and the module has no networking code.
+verified network byte order. It also keeps TCP connect and UDP associate
+completion command-specific and requires the returned connection ID to be
+non-zero. Opaque values and payloads are excluded from representations, and
+the module has no networking code.
 
 `biubiu_heartbeat_model.py` models the direct signal heartbeat without opening
 a socket. It builds the observed inner payload, `x-biu-client` header and outer
