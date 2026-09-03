@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -27,6 +29,7 @@ CHANNEL_TICKET_ENDPOINT = (
 )
 
 CHANNEL_PROTOCOLS = frozenset({"TCP", "UDP", "ICMP"})
+ENGINE_PROTOCOL_IDS = {"ICMP": 1, "TCP": 6, "UDP": 0x11}
 
 
 class Platform(IntEnum):
@@ -75,11 +78,29 @@ class ChannelAuthorization:
     channel_address: str
     channel_ip: str
     channel_ticket: str = field(repr=False)
-    data_channel_session_id: int
+    data_channel_session_id: int = field(repr=False)
     expires_at: int
     port: int
     protocol: str
     secret_type: str = field(repr=False)
+
+    @property
+    def engine_protocol_id(self) -> int:
+        return ENGINE_PROTOCOL_IDS[self.protocol]
+
+
+@dataclass(frozen=True)
+class BproxyAuthorization:
+    token: bytes = field(repr=False)
+    xor_marker: int = field(repr=False)
+    tcp_session_id: int = field(repr=False)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "hasToken": bool(self.token),
+            "hasXorMarker": bool(self.xor_marker),
+            "hasTcpSession": bool(self.tcp_session_id),
+        }
 
 
 @dataclass(frozen=True)
@@ -88,6 +109,29 @@ class SignalAuthorization:
     token: str = field(repr=False)
     xor: str = field(repr=False)
     channels: tuple[ChannelAuthorization, ...]
+
+    def bproxy_authorization(self) -> BproxyAuthorization:
+        try:
+            token = base64.b64decode(self.token, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("token must be valid Base64") from exc
+        if not token:
+            raise ValueError("token must decode to a non-empty byte string")
+
+        marker_bytes = self.xor.encode("utf-8")
+        tcp_session_id = next(
+            (
+                channel.data_channel_session_id
+                for channel in self.channels
+                if channel.engine_protocol_id == ENGINE_PROTOCOL_IDS["TCP"]
+            ),
+            0,
+        )
+        return BproxyAuthorization(
+            token=token,
+            xor_marker=marker_bytes[0] if marker_bytes else 0,
+            tcp_session_id=tcp_session_id,
+        )
 
     def summary(self) -> dict[str, Any]:
         return {

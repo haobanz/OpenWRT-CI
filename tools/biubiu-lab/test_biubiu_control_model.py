@@ -147,8 +147,8 @@ class ControlModelTests(unittest.TestCase):
     def test_signal_authorization_is_validated_and_redacted(self) -> None:
         response_data = {
             "signalSessionId": "private-signal-session",
-            "token": "private-signal-token",
-            "xor": "private-xor-value",
+            "token": "cHJpdmF0ZS1zaWduYWwtdG9rZW4=",
+            "xor": "1",
             "channelAuthList": [
                 {
                     "channelAddress": "test-channel",
@@ -165,6 +165,7 @@ class ControlModelTests(unittest.TestCase):
         authorization = control.parse_signal_authorization(response_data)
 
         self.assertEqual(authorization.channels[0].protocol, "TCP")
+        self.assertEqual(authorization.channels[0].engine_protocol_id, 6)
         self.assertEqual(authorization.channels[0].channel_ip, "192.0.2.20")
         self.assertEqual(
             authorization.summary(),
@@ -178,8 +179,7 @@ class ControlModelTests(unittest.TestCase):
         )
         rendered = repr(authorization)
         self.assertNotIn("private-signal-session", rendered)
-        self.assertNotIn("private-signal-token", rendered)
-        self.assertNotIn("private-xor-value", rendered)
+        self.assertNotIn("cHJpdmF0ZS1zaWduYWwtdG9rZW4=", rendered)
         self.assertNotIn("private-channel-ticket", rendered)
         self.assertNotIn("private-secret-type", rendered)
 
@@ -194,6 +194,66 @@ class ControlModelTests(unittest.TestCase):
         parsed_nullable = control.parse_signal_authorization(nullable)
         self.assertEqual(parsed_nullable.xor, "")
         self.assertEqual(parsed_nullable.channels[0].channel_address, "")
+
+    def test_signal_authorization_builds_redacted_bproxy_handoff(self) -> None:
+        response_data = {
+            "signalSessionId": "private-signal-session",
+            "token": "cHJpdmF0ZS10b2tlbg==",
+            "xor": "true",
+            "channelAuthList": [
+                {
+                    "channelAddress": "udp-channel",
+                    "channelIp": "192.0.2.21",
+                    "channelSt": "private-udp-ticket",
+                    "dataChannelSessionId": 17,
+                    "expireTime": 1700000000000,
+                    "port": 443,
+                    "proType": "UDP",
+                    "secretType": "private-udp-secret",
+                },
+                {
+                    "channelAddress": "tcp-channel",
+                    "channelIp": "192.0.2.22",
+                    "channelSt": "private-tcp-ticket",
+                    "dataChannelSessionId": 6,
+                    "expireTime": 1700000000000,
+                    "port": 443,
+                    "proType": "TCP",
+                    "secretType": "private-tcp-secret",
+                },
+            ],
+        }
+        authorization = control.parse_signal_authorization(response_data)
+        bproxy = authorization.bproxy_authorization()
+
+        self.assertEqual(
+            [channel.engine_protocol_id for channel in authorization.channels],
+            [0x11, 6],
+        )
+        self.assertEqual(bproxy.token, b"private-token")
+        self.assertEqual(bproxy.xor_marker, ord("t"))
+        self.assertEqual(
+            bproxy.summary(),
+            {"hasToken": True, "hasXorMarker": True, "hasTcpSession": True},
+        )
+        self.assertNotIn("private-token", repr(bproxy))
+        self.assertNotIn("tcp_session_id=6", repr(bproxy))
+
+        udp_only = copy.deepcopy(response_data)
+        udp_only["channelAuthList"] = udp_only["channelAuthList"][:1]
+        self.assertEqual(
+            control.parse_signal_authorization(udp_only)
+            .bproxy_authorization()
+            .tcp_session_id,
+            0,
+        )
+
+        invalid_token = copy.deepcopy(response_data)
+        invalid_token["token"] = "not Base64!"
+        with self.assertRaises(ValueError):
+            control.parse_signal_authorization(
+                invalid_token
+            ).bproxy_authorization()
 
     def test_channel_ticket_request_matches_observed_shape(self) -> None:
         engine_client = {

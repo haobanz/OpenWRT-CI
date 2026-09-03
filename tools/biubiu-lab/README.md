@@ -61,6 +61,12 @@ service ticket and business user ID only into a copied `client.ex` object and
 rejects conflicting account data. It does not send requests or generate the
 mobile security SDK's anti-abuse headers. It also validates and redacts signal
 login authorization data and builds the observed channel-ticket renewal shape.
+The verified native handoff maps channel protocols to `ICMP=1`, `TCP=6`, and
+`UDP=17`. It Base64-decodes the API token into an opaque `bproxyToken`, selects
+the first TCP channel's data-session ID for the bproxy configuration, and
+passes only the first byte of the API's `xor` string as an opaque marker. The
+marker is deliberately not treated as a cipher or key because no observed
+code path supports that interpretation.
 
 `biubiu_profile_model.py` parses the observed JSON engine-profile boundary. It
 normalizes TUN CIDRs and route ports, validates outbound references, and models
