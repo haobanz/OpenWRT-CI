@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.3.0
+PKG_VERSION:=0.4.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -22,7 +22,8 @@ endef
 define Package/biubiu-acc/description
   An independently implemented OpenWrt client for user-authorized biubiu
   sessions. The current milestone implements verified account login and the
-  separately observed acceleration ADAT envelope; transport is in development.
+  separately observed acceleration ADAT envelope, with root-only persistent
+  session refresh; transport is in development.
 endef
 
 define Build/Prepare
@@ -41,6 +42,20 @@ endef
 define Package/biubiu-acc/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/biubiu-accctl $(1)/usr/bin/biubiu-accctl
+	$(INSTALL_DIR) $(1)/etc/biubiu-acc
+	chmod 0700 $(1)/etc/biubiu-acc
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
+	$(INSTALL_DATA) ./files/biubiu-acc.upgrade \
+		$(1)/lib/upgrade/keep.d/biubiu-acc
+endef
+
+define Package/biubiu-acc/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	mkdir -p /etc/biubiu-acc
+	chmod 0700 /etc/biubiu-acc
+}
+exit 0
 endef
 
 $(eval $(call BuildPackage,biubiu-acc))

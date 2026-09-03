@@ -9,16 +9,22 @@
 #include <openssl/rsa.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.3.0"
+#define BIUBIU_ACC_VERSION "0.4.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
+#define MAX_STATE_SIZE (1024U * 1024U)
+#define DEFAULT_DEVICE_ID_FILE "/etc/biubiu-acc/device-id"
+#define DEFAULT_SESSION_FILE "/etc/biubiu-acc/session.json"
 
 static const char public_key_pem[] =
     "-----BEGIN PUBLIC KEY-----\n"
@@ -526,6 +532,205 @@ static char *new_uuid(void)
     return value;
 }
 
+static bool valid_uuid(const char *value)
+{
+    size_t i;
+
+    if (!value || strlen(value) != 36)
+        return false;
+    for (i = 0; i < 36; i++) {
+        bool separator = i == 8 || i == 13 || i == 18 || i == 23;
+        bool hexadecimal = (value[i] >= '0' && value[i] <= '9') ||
+                           (value[i] >= 'a' && value[i] <= 'f') ||
+                           (value[i] >= 'A' && value[i] <= 'F');
+
+        if ((separator && value[i] != '-') || (!separator && !hexadecimal))
+            return false;
+    }
+    return true;
+}
+
+static int write_all(int fd, const unsigned char *data, size_t length)
+{
+    size_t written = 0;
+
+    while (written < length) {
+        ssize_t count = write(fd, data + written, length - written);
+
+        if (count < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (count == 0)
+            return -1;
+        written += (size_t)count;
+    }
+    return 0;
+}
+
+static char *parent_directory(const char *path)
+{
+    const char *slash;
+    size_t length;
+    char *parent;
+
+    if (!path || path[0] != '/')
+        return NULL;
+    slash = strrchr(path, '/');
+    if (!slash || slash[1] == '\0')
+        return NULL;
+    length = slash == path ? 1 : (size_t)(slash - path);
+    parent = malloc(length + 1);
+    if (!parent)
+        return NULL;
+    memcpy(parent, path, length);
+    parent[length] = '\0';
+    return parent;
+}
+
+static int atomic_private_write(const char *path, const unsigned char *data,
+                                size_t length)
+{
+    char *parent = NULL;
+    char *temporary = NULL;
+    char *suffix = NULL;
+    int fd = -1;
+    int directory_fd = -1;
+    int status = -1;
+
+    if (!path || !data || length > MAX_STATE_SIZE)
+        return -1;
+    parent = parent_directory(path);
+    suffix = new_uuid();
+    if (!parent || !suffix || asprintf(&temporary, "%s.tmp.%s", path, suffix) < 0)
+        goto out;
+    fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+              S_IRUSR | S_IWUSR);
+    if (fd < 0 || fchmod(fd, S_IRUSR | S_IWUSR) != 0 ||
+        write_all(fd, data, length) != 0 || fsync(fd) != 0)
+        goto out;
+    if (close(fd) != 0) {
+        fd = -1;
+        goto out;
+    }
+    fd = -1;
+    if (rename(temporary, path) != 0)
+        goto out;
+    directory_fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directory_fd >= 0)
+        (void)fsync(directory_fd);
+    status = 0;
+
+out:
+    if (fd >= 0)
+        close(fd);
+    if (status != 0 && temporary)
+        unlink(temporary);
+    if (directory_fd >= 0)
+        close(directory_fd);
+    free(parent);
+    free(temporary);
+    free(suffix);
+    return status;
+}
+
+static int read_private_file(const char *path, struct bytes *contents)
+{
+    struct stat info;
+    size_t offset = 0;
+    int fd = -1;
+    int status = -1;
+
+    memset(contents, 0, sizeof(*contents));
+    if (!path || path[0] != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return -1;
+    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) ||
+        info.st_uid != geteuid() || (info.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
+        info.st_size <= 0 || (uintmax_t)info.st_size > MAX_STATE_SIZE) {
+        errno = EACCES;
+        goto out;
+    }
+    contents->data = malloc((size_t)info.st_size + 1);
+    if (!contents->data)
+        goto out;
+    while (offset < (size_t)info.st_size) {
+        ssize_t count = read(fd, contents->data + offset,
+                             (size_t)info.st_size - offset);
+
+        if (count < 0) {
+            if (errno == EINTR)
+                continue;
+            goto out;
+        }
+        if (count == 0)
+            break;
+        offset += (size_t)count;
+        contents->len = offset;
+    }
+    if (offset != (size_t)info.st_size) {
+        errno = EIO;
+        goto out;
+    }
+    contents->data[offset] = '\0';
+    status = 0;
+
+out:
+    if (status != 0)
+        bytes_free(contents);
+    close(fd);
+    return status;
+}
+
+static int resolve_device_identity(const char *explicit_id, const char *path,
+                                   char **device_id)
+{
+    struct bytes stored = {0};
+    char *generated = NULL;
+    int status = -1;
+
+    *device_id = NULL;
+    if (explicit_id) {
+        if (!valid_uuid(explicit_id)) {
+            errno = EINVAL;
+            return -1;
+        }
+        *device_id = strdup(explicit_id);
+        return *device_id ? 0 : -1;
+    }
+    if (read_private_file(path, &stored) == 0) {
+        while (stored.len && (stored.data[stored.len - 1] == '\n' ||
+                              stored.data[stored.len - 1] == '\r'))
+            stored.data[--stored.len] = '\0';
+        if (!valid_uuid((const char *)stored.data)) {
+            errno = EINVAL;
+            goto out;
+        }
+        *device_id = strdup((const char *)stored.data);
+        status = *device_id ? 0 : -1;
+        goto out;
+    }
+    if (errno != ENOENT)
+        goto out;
+    generated = new_uuid();
+    if (!generated || atomic_private_write(path, (const unsigned char *)generated,
+                                            strlen(generated)) != 0)
+        goto out;
+    *device_id = generated;
+    generated = NULL;
+    status = 0;
+
+out:
+    free(generated);
+    bytes_free(&stored);
+    return status;
+}
+
 static bool decimal_string(const char *value, size_t minimum, size_t maximum)
 {
     size_t length;
@@ -564,6 +769,213 @@ static bool response_is_success(json_object *response)
         !json_object_is_type(code, json_type_string))
         return false;
     return strcmp(json_object_get_string(code), "SUCCESS") == 0;
+}
+
+static json_object *object_member(json_object *object, const char *name,
+                                  enum json_type type)
+{
+    json_object *value = NULL;
+
+    if (!object || !json_object_is_type(object, json_type_object) ||
+        !json_object_object_get_ex(object, name, &value) ||
+        !json_object_is_type(value, type))
+        return NULL;
+    return value;
+}
+
+static const char *string_member(json_object *object, const char *name)
+{
+    json_object *value = object_member(object, name, json_type_string);
+
+    return value ? json_object_get_string(value) : NULL;
+}
+
+static json_object *session_info_from_record(json_object *record)
+{
+    json_object *login = object_member(record, "login", json_type_object);
+    json_object *data = object_member(login, "data", json_type_object);
+
+    return object_member(data, "sessionInfo", json_type_object);
+}
+
+static int session_components(json_object *record, const char **device_id,
+                              const char **method, const char **session_id,
+                              const char **refresh_token, size_t *cookie_count)
+{
+    json_object *local = object_member(record, "local", json_type_object);
+    json_object *session_info = session_info_from_record(record);
+    json_object *cookies;
+    const char *stored_device_id;
+
+    if (!local || !session_info)
+        return -1;
+    stored_device_id = string_member(local, "deviceId");
+    if (!valid_uuid(stored_device_id))
+        return -1;
+    if (device_id)
+        *device_id = stored_device_id;
+    if (method) {
+        const char *stored_method = string_member(local, "method");
+
+        *method = stored_method && stored_method[0] ? stored_method : "unknown";
+    }
+    if (session_id)
+        *session_id = string_member(session_info, "sessionId");
+    if (refresh_token)
+        *refresh_token = string_member(session_info, "refreshToken");
+    if (cookie_count) {
+        cookies = object_member(session_info, "cookies", json_type_array);
+        *cookie_count = cookies ? json_object_array_length(cookies) : 0;
+    }
+    return 0;
+}
+
+static void cleanse_json_value(json_object *value)
+{
+    size_t i;
+
+    if (!value)
+        return;
+    if (json_object_is_type(value, json_type_string)) {
+        const char *text = json_object_get_string(value);
+
+        if (text)
+            OPENSSL_cleanse((void *)text, strlen(text));
+        return;
+    }
+    if (json_object_is_type(value, json_type_array)) {
+        for (i = 0; i < json_object_array_length(value); i++)
+            cleanse_json_value(json_object_array_get_idx(value, i));
+        return;
+    }
+    if (json_object_is_type(value, json_type_object)) {
+        json_object_object_foreach(value, key, child)
+        {
+            (void)key;
+            cleanse_json_value(child);
+        }
+    }
+}
+
+static int load_session_record(const char *path, json_object **record)
+{
+    struct bytes contents = {0};
+    json_object *parsed = NULL;
+    int status = -1;
+
+    *record = NULL;
+    if (read_private_file(path, &contents) != 0)
+        return -1;
+    parsed = json_tokener_parse((const char *)contents.data);
+    if (!parsed || !json_object_is_type(parsed, json_type_object) ||
+        session_components(parsed, NULL, NULL, NULL, NULL, NULL) != 0) {
+        errno = EINVAL;
+        goto out;
+    }
+    *record = parsed;
+    parsed = NULL;
+    status = 0;
+
+out:
+    cleanse_json_value(parsed);
+    json_object_put(parsed);
+    bytes_free(&contents);
+    return status;
+}
+
+static int store_session_record(const char *path, const char *device_id,
+                                const char *method, json_object *login_result)
+{
+    json_object *record = NULL;
+    json_object *local = NULL;
+    json_object *session_info;
+    const char *session_id;
+    const char *refresh_token;
+    const char *serialized;
+    int status = -1;
+
+    if (!path || !valid_uuid(device_id) || !method ||
+        !response_is_success(login_result))
+        return -1;
+    session_info = object_member(object_member(login_result, "data", json_type_object),
+                                 "sessionInfo", json_type_object);
+    session_id = string_member(session_info, "sessionId");
+    refresh_token = string_member(session_info, "refreshToken");
+    if (!session_id || !session_id[0] || !refresh_token || !refresh_token[0])
+        return -1;
+
+    record = json_object_new_object();
+    local = json_object_new_object();
+    if (!record || !local)
+        goto out;
+    json_object_object_add(record, "schemaVersion", json_object_new_int(1));
+    json_object_object_add(local, "deviceId", json_object_new_string(device_id));
+    json_object_object_add(local, "method", json_object_new_string(method));
+    json_object_object_add(record, "local", local);
+    local = NULL;
+    json_object_object_add(record, "login", json_object_get(login_result));
+    serialized = json_object_to_json_string_ext(record, JSON_C_TO_STRING_PRETTY);
+    if (!serialized || atomic_private_write(path, (const unsigned char *)serialized,
+                                             strlen(serialized)) != 0)
+        goto out;
+    status = 0;
+
+out:
+    json_object_put(local);
+    json_object_put(record);
+    return status;
+}
+
+static int print_session_status(const char *path)
+{
+    json_object *record = NULL;
+    json_object *output = NULL;
+    const char *method = "none";
+    const char *session_id = NULL;
+    const char *refresh_token = NULL;
+    size_t cookie_count = 0;
+    bool stored = false;
+    int status = 1;
+
+    if (load_session_record(path, &record) == 0) {
+        if (session_components(record, NULL, &method, &session_id, &refresh_token,
+                               &cookie_count) != 0)
+            goto out;
+        stored = true;
+    } else if (errno != ENOENT) {
+        fprintf(stderr, "unable to read private session file: %s\n", strerror(errno));
+        goto out;
+    }
+    output = json_object_new_object();
+    if (!output)
+        goto out;
+    json_object_object_add(output, "authenticated",
+                           json_object_new_boolean(session_id && session_id[0]));
+    json_object_object_add(output, "refreshable",
+                           json_object_new_boolean(refresh_token && refresh_token[0]));
+    json_object_object_add(output, "cookieCount",
+                           json_object_new_int64((int64_t)cookie_count));
+    json_object_object_add(output, "method", json_object_new_string(method));
+    json_object_object_add(output, "deviceIdStored", json_object_new_boolean(stored));
+    puts(json_object_to_json_string_ext(output, JSON_C_TO_STRING_PLAIN));
+    status = 0;
+
+out:
+    json_object_put(output);
+    cleanse_json_value(record);
+    json_object_put(record);
+    return status;
+}
+
+static int set_client_session(json_object *payload, const char *session_id)
+{
+    json_object *client_user = object_member(payload, "clientUser", json_type_object);
+
+    if (!client_user || !session_id || !session_id[0])
+        return -1;
+    json_object_object_add(client_user, "sessionId",
+                           json_object_new_string(session_id));
+    return 0;
 }
 
 static json_object *build_client_context(const char *device_id)
@@ -606,13 +1018,10 @@ static json_object *build_client_context(const char *device_id)
     return root;
 
 fail:
-    if (root)
-        json_object_put(root);
-    else {
-        json_object_put(device);
-        json_object_put(user);
-        json_object_put(scene);
-    }
+    json_object_put(root);
+    json_object_put(device);
+    json_object_put(user);
+    json_object_put(scene);
     return NULL;
 }
 
@@ -761,6 +1170,65 @@ out:
     return status;
 }
 
+static void print_login_summary(const char *method)
+{
+    json_object *summary = json_object_new_object();
+
+    if (!summary)
+        return;
+    json_object_object_add(summary, "success", json_object_new_boolean(true));
+    json_object_object_add(summary, "sessionStored", json_object_new_boolean(true));
+    json_object_object_add(summary, "method", json_object_new_string(method));
+    puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+    json_object_put(summary);
+}
+
+static int refresh_stored_session(const char *session_file)
+{
+    json_object *record = NULL;
+    json_object *payload = NULL;
+    json_object *result = NULL;
+    const char *device_id = NULL;
+    const char *session_id = NULL;
+    const char *refresh_token = NULL;
+    int status = 1;
+
+    if (load_session_record(session_file, &record) != 0 ||
+        session_components(record, &device_id, NULL, &session_id, &refresh_token,
+                           NULL) != 0 ||
+        !session_id || !session_id[0] || !refresh_token || !refresh_token[0]) {
+        fputs("session refresh requires a valid private session file\n", stderr);
+        goto out;
+    }
+    payload = build_client_context(device_id);
+    if (!payload || set_client_session(payload, session_id) != 0)
+        goto out;
+    json_object_object_add(payload, "sessionToken",
+                           json_object_new_string(refresh_token));
+    if (api_request("capi/login.autoLogin", payload, &result) != 0)
+        goto out;
+    if (!response_is_success(result)) {
+        fputs("session refresh was rejected by the service\n", stderr);
+        status = 3;
+        goto out;
+    }
+    if (store_session_record(session_file, device_id, "refresh", result) != 0) {
+        fputs("unable to replace the private session file\n", stderr);
+        goto out;
+    }
+    print_login_summary("refresh");
+    status = 0;
+
+out:
+    cleanse_json_value(result);
+    json_object_put(result);
+    cleanse_json_value(payload);
+    json_object_put(payload);
+    cleanse_json_value(record);
+    json_object_put(record);
+    return status;
+}
+
 static int run_login_cipher_self_test(void)
 {
     static const unsigned char key[16] = "0123456789abcdef";
@@ -881,18 +1349,109 @@ out:
     return result;
 }
 
+static int run_session_storage_self_test(void)
+{
+    static const char device_id[] = "5f234ff7-cf79-492a-aa16-f7509d37dd61";
+    char directory_template[] = "/tmp/biubiu-acc-selftest.XXXXXX";
+    char *directory;
+    char *path = NULL;
+    char *link_path = NULL;
+    json_object *response = NULL;
+    json_object *data = NULL;
+    json_object *session_info = NULL;
+    json_object *cookies = NULL;
+    json_object *loaded = NULL;
+    json_object *unsafe = NULL;
+    const char *loaded_device_id = NULL;
+    const char *method = NULL;
+    const char *session_id = NULL;
+    const char *refresh_token = NULL;
+    size_t cookie_count = 0;
+    struct stat info;
+    int result = 1;
+
+    directory = mkdtemp(directory_template);
+    if (!directory || asprintf(&path, "%s/session.json", directory) < 0)
+        goto out;
+    response = json_object_new_object();
+    data = json_object_new_object();
+    session_info = json_object_new_object();
+    cookies = json_object_new_array();
+    if (!response || !data || !session_info || !cookies)
+        goto out;
+    json_object_object_add(response, "code", json_object_new_string("SUCCESS"));
+    json_object_object_add(session_info, "sessionId",
+                           json_object_new_string("selftest-session"));
+    json_object_object_add(session_info, "refreshToken",
+                           json_object_new_string("selftest-refresh"));
+    json_object_array_add(cookies, json_object_new_string("selftest-cookie"));
+    json_object_object_add(session_info, "cookies", cookies);
+    cookies = NULL;
+    json_object_object_add(data, "sessionInfo", session_info);
+    session_info = NULL;
+    json_object_object_add(response, "data", data);
+    data = NULL;
+
+    if (store_session_record(path, device_id, "self-test", response) != 0 ||
+        stat(path, &info) != 0 || (info.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
+        load_session_record(path, &loaded) != 0 ||
+        session_components(loaded, &loaded_device_id, &method, &session_id,
+                           &refresh_token, &cookie_count) != 0 ||
+        strcmp(loaded_device_id, device_id) != 0 ||
+        strcmp(method, "self-test") != 0 ||
+        !session_id || strcmp(session_id, "selftest-session") != 0 ||
+        !refresh_token || strcmp(refresh_token, "selftest-refresh") != 0 ||
+        cookie_count != 1)
+        goto out;
+    if (chmod(path, S_IRUSR | S_IWUSR | S_IRGRP) != 0 ||
+        load_session_record(path, &unsafe) == 0 || errno != EACCES ||
+        chmod(path, S_IRUSR | S_IWUSR) != 0 ||
+        asprintf(&link_path, "%s/session-link.json", directory) < 0 ||
+        symlink(path, link_path) != 0 || load_session_record(link_path, &unsafe) == 0)
+        goto out;
+    result = 0;
+
+out:
+    if (result != 0)
+        fputs("private session storage self-test failed\n", stderr);
+    cleanse_json_value(loaded);
+    json_object_put(loaded);
+    cleanse_json_value(unsafe);
+    json_object_put(unsafe);
+    cleanse_json_value(response);
+    json_object_put(response);
+    json_object_put(data);
+    json_object_put(session_info);
+    json_object_put(cookies);
+    if (link_path)
+        unlink(link_path);
+    if (path)
+        unlink(path);
+    if (directory)
+        rmdir(directory);
+    free(path);
+    free(link_path);
+    return result;
+}
+
 static int run_self_test(void)
 {
-    if (run_login_cipher_self_test() != 0 || run_adat_cipher_self_test() != 0)
+    if (run_login_cipher_self_test() != 0 || run_adat_cipher_self_test() != 0 ||
+        run_session_storage_self_test() != 0)
         return 1;
-    puts("{\"success\":true,\"tests\":[\"account-envelope\",\"acceleration-adat\"]}");
+    puts("{\"success\":true,\"tests\":[\"account-envelope\","
+         "\"acceleration-adat\",\"private-session-store\"]}");
     return 0;
 }
 
 static void usage(FILE *stream)
 {
     fprintf(stream,
-            "Usage: biubiu-accctl [--device-id UUID] COMMAND [ARGS]\n"
+            "Usage: biubiu-accctl [OPTIONS] COMMAND [ARGS]\n"
+            "Options:\n"
+            "  --device-id UUID       Override the persistent device identity\n"
+            "  --device-id-file PATH  Device identity file (default: %s)\n"
+            "  --session-file PATH    Private session file (default: %s)\n"
             "Commands:\n"
             "  qr-start          Create a QR login challenge\n"
             "  qr-poll TOKEN     Query a QR login challenge\n"
@@ -903,26 +1462,44 @@ static void usage(FILE *stream)
             "                    Exchange a login code for an account session\n"
             "  password-login LOGIN_NAME [AREA_CODE]\n"
             "                    Prompt privately for a password and log in\n"
-            "  self-test         Verify both local cipher implementations\n"
-            "  version           Print the program version\n");
+            "  session-status    Print redacted local session state\n"
+            "  session-refresh   Refresh and atomically replace the session\n"
+            "  self-test         Verify ciphers and private session storage\n"
+            "  version           Print the program version\n",
+            DEFAULT_DEVICE_ID_FILE, DEFAULT_SESSION_FILE);
 }
 
 int main(int argc, char **argv)
 {
-    const char *device_id = NULL;
+    const char *explicit_device_id = NULL;
+    const char *device_id_file = DEFAULT_DEVICE_ID_FILE;
+    const char *session_file = DEFAULT_SESSION_FILE;
+    const char *store_method = NULL;
+    char *device_id = NULL;
     const char *command;
     char **arguments;
     int argument_count;
-    char *generated_device_id = NULL;
     json_object *payload = NULL;
     json_object *result = NULL;
     bool curl_initialized = false;
     int index = 1;
     int status = 1;
 
-    if (argc > 2 && strcmp(argv[index], "--device-id") == 0) {
-        device_id = argv[index + 1];
-        index += 2;
+    while (index < argc) {
+        const char *option = argv[index];
+
+        if (strcmp(option, "--device-id") == 0 && index + 1 < argc) {
+            explicit_device_id = argv[index + 1];
+            index += 2;
+        } else if (strcmp(option, "--device-id-file") == 0 && index + 1 < argc) {
+            device_id_file = argv[index + 1];
+            index += 2;
+        } else if (strcmp(option, "--session-file") == 0 && index + 1 < argc) {
+            session_file = argv[index + 1];
+            index += 2;
+        } else {
+            break;
+        }
     }
     if (index >= argc) {
         usage(stderr);
@@ -937,20 +1514,23 @@ int main(int argc, char **argv)
     }
     if (strcmp(command, "self-test") == 0 && argument_count == 0)
         return run_self_test();
+    if (strcmp(command, "session-status") == 0 && argument_count == 0)
+        return print_session_status(session_file);
 
-    if (!device_id) {
-        generated_device_id = new_uuid();
-        device_id = generated_device_id;
-    }
-    if (!device_id) {
-        fprintf(stderr, "unable to generate device ID\n");
-        goto out;
-    }
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "unable to initialize HTTP client\n");
         goto out;
     }
     curl_initialized = true;
+    if (strcmp(command, "session-refresh") == 0 && argument_count == 0) {
+        status = refresh_stored_session(session_file);
+        goto out;
+    }
+    if (resolve_device_identity(explicit_device_id, device_id_file, &device_id) != 0) {
+        fprintf(stderr, "unable to load or create the private device identity: %s\n",
+                strerror(errno));
+        goto out;
+    }
     payload = build_client_context(device_id);
     if (!payload) {
         fprintf(stderr, "unable to allocate request payload\n");
@@ -970,6 +1550,7 @@ int main(int argc, char **argv)
         json_object_object_add(payload, "connectCode",
                                json_object_new_string(arguments[0]));
         status = api_request("capi/login.autoLoginByCode", payload, &result);
+        store_method = "qr";
     } else if (strcmp(command, "sms-send") == 0 &&
                (argument_count == 1 || argument_count == 2)) {
         const char *area_code = argument_count == 2 ? arguments[1] : "86";
@@ -1003,6 +1584,7 @@ int main(int argc, char **argv)
         json_object_object_add(payload, "areaCode",
                                json_object_new_string(area_code));
         status = api_request("capi/login.loginWithSmsCode", payload, &result);
+        store_method = "sms";
     } else if (strcmp(command, "password-login") == 0 &&
                (argument_count == 1 || argument_count == 2)) {
         const char *area_code = argument_count == 2 ? arguments[1] : "86";
@@ -1028,25 +1610,36 @@ int main(int argc, char **argv)
                                json_object_new_string(area_code));
         OPENSSL_cleanse(password, password_len);
         status = api_request("capi/login.loginByPassword", payload, &result);
+        store_method = "password";
     } else {
         usage(stderr);
         status = 2;
         goto out;
     }
     if (status == 0 && result) {
-        puts(json_object_to_json_string_ext(result, JSON_C_TO_STRING_PRETTY));
-        if (!response_is_success(result))
+        if (!response_is_success(result)) {
+            puts(json_object_to_json_string_ext(result, JSON_C_TO_STRING_PRETTY));
             status = 3;
+        } else if (store_method) {
+            if (store_session_record(session_file, device_id, store_method, result) != 0) {
+                fputs("login succeeded but the private session could not be stored\n",
+                      stderr);
+                status = 1;
+            } else {
+                print_login_summary(store_method);
+            }
+        } else {
+            puts(json_object_to_json_string_ext(result, JSON_C_TO_STRING_PRETTY));
+        }
     }
 
 out:
-    if (result)
-        json_object_put(result);
-    if (payload) {
-        cleanse_json_string(payload, "password");
-        json_object_put(payload);
-    }
-    free(generated_device_id);
+    cleanse_json_value(result);
+    json_object_put(result);
+    cleanse_json_string(payload, "password");
+    cleanse_json_value(payload);
+    json_object_put(payload);
+    free(device_id);
     if (curl_initialized)
         curl_global_cleanup();
     return status;

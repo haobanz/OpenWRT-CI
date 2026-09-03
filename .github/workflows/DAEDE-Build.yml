@@ -58,11 +58,21 @@ jobs:
           )"
           known_sha=""
           known_cloudflared_sha=""
-          if [[ -f .github/daede-state/immortalwrt-main.sha ]]; then
-            known_sha="$(tr -d '[:space:]' < .github/daede-state/immortalwrt-main.sha)"
+          state_ref=HEAD
+          if [[ "$FORCE_BUILD" != true ]]; then
+            # A scheduled run may have waited behind a push build. Read the
+            # baseline committed by that build instead of the stale event SHA.
+            git fetch --no-tags origin \
+              '+refs/heads/main:refs/remotes/origin/main'
+            state_ref=origin/main
           fi
-          if [[ -f .github/daede-state/cloudflared.sha ]]; then
-            known_cloudflared_sha="$(tr -d '[:space:]' < .github/daede-state/cloudflared.sha)"
+          if git cat-file -e \
+              "${state_ref}:.github/daede-state/immortalwrt-main.sha" 2>/dev/null; then
+            known_sha="$(git show "${state_ref}:.github/daede-state/immortalwrt-main.sha" | tr -d '[:space:]')"
+          fi
+          if git cat-file -e \
+              "${state_ref}:.github/daede-state/cloudflared.sha" 2>/dev/null; then
+            known_cloudflared_sha="$(git show "${state_ref}:.github/daede-state/cloudflared.sha" | tr -d '[:space:]')"
           fi
 
           changed=false
@@ -121,7 +131,8 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get update
-          sudo -E apt-get install -y dos2unix libfuse-dev python3-cryptography
+          sudo -E apt-get install -y dos2unix libfuse-dev python3-cryptography \
+            libcurl4-openssl-dev libjson-c-dev libssl-dev
           sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo -E apt-get install -y dwarves
           command -v pahole
@@ -131,7 +142,15 @@ jobs:
       - name: Test clean-room protocol codecs
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 -B -m unittest discover -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
+        run: |
+          set -Eeuo pipefail
+          python3 -B -m unittest discover \
+            -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
+          cc -std=c11 -Wall -Wextra -Wformat=2 -Werror \
+            -o "$RUNNER_TEMP/biubiu-accctl-host" \
+            vendor/game-accelerators/biubiu-acc/src/biubiu-accctl.c \
+            $(pkg-config --cflags --libs libcurl json-c openssl)
+          "$RUNNER_TEMP/biubiu-accctl-host" self-test
 
       - name: Record build revision
         run: |
@@ -284,10 +303,11 @@ jobs:
 
             Release 另附实验性的 biubiu-acc APK。它是本仓库的独立实现，当前
             已完成二维码协议，并实现短信验证码和隐藏输入密码登录；手机登录的
-            真实会话及安全续期已经账号本人授权验证。0.3.0 另加入加速业务独立
-            key/IV 的 ADAT 离线编解码与密钥轮换状态测试，不内置受保护的引导
-            公钥。数据通道与指定 LAN 设备路由仍在验证，因此暂不预装进固件，
-            也不会接管流量。
+            真实会话及安全续期已经账号本人授权验证。0.4.0 已将稳定设备 ID、
+            root 私有会话存储、脱敏状态查询和原子续期移植到 OpenWrt C 客户端，
+            并包含加速业务独立 key/IV 的 ADAT 离线编解码与密钥轮换状态测试，
+            不内置受保护的引导公钥。数据通道与指定 LAN 设备路由仍在验证，
+            因此暂不预装进固件，也不会接管流量。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。
