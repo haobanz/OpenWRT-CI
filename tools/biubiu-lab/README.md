@@ -89,6 +89,13 @@ explicit caller-supplied input and is hidden from object representations. The
 app's protected heartbeat key and IV are not present in this repository; tests
 use synthetic 16-byte values only.
 
+Static interceptor analysis also confirms that the main Android pipeline may
+inject `x-sign`, `x-mini-wua`, `x-umt`, `x-sgext`, and `x-bx-version` only for
+the configured main host. The official client falls through to the original
+unsigned request when that SDK path is disabled or unavailable. No generator
+for these provider-owned values is implemented here; server-side acceptance of
+the unsigned control endpoints still requires an owner-authorized test.
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
