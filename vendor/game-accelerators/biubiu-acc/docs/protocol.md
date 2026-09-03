@@ -68,8 +68,11 @@ https://gtm-main.biubiu001.com/client/1/config.getSecurityKey
 ```
 
 The bootstrap request includes `df=adat`, `cver=1.0.0`, and `os=android`.
-The clean-room client will require an explicitly supplied bootstrap public key
-until a documented provider-independent bootstrap path is verified.
+Version 0.5.0 accepts that exact rotated-key representation from a root-private
+input file, validates the X.509 DER RSA key, and caches only the version and
+public material in a mode `0600` file. Status output is limited to version, RSA
+size, and SHA-256 fingerprint. A documented provider-independent bootstrap path
+is still required before this can be automated.
 
 ## Verified account endpoints
 
@@ -227,14 +230,13 @@ Windows process scanner on the accelerated machine.
 
 ## Remaining milestones
 
-1. Add external bootstrap-key import and cached key rotation to the C service.
-2. Implement and runtime-verify game list, game profile, entitlement check, and
+1. Implement and runtime-verify game list, game profile, entitlement check, and
    node selection.
-3. Runtime-verify heartbeat cadence, channel renewal, and service error behavior.
-4. Implement the smallest compatible data channel, initially TCP and UDP,
+2. Runtime-verify heartbeat cadence, channel renewal, and service error behavior.
+3. Implement the smallest compatible data channel, initially TCP and UDP,
    against user-authorized test sessions.
-5. Add nftables/TUN steering for one selected LAN IPv4 address.
-6. Add procd, ubus, LuCI, traffic counters, conflict checks, and rollback.
+4. Add nftables/TUN steering for one selected LAN IPv4 address.
+5. Add procd, ubus, LuCI, traffic counters, conflict checks, and rollback.
 
 The transport layer is not assumed to be ordinary HTTP, SOCKS, or a standard
 VPN. Known names such as Bolt, KCP, UOT, and FEC are treated only as clues

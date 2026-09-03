@@ -7,6 +7,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
+#include <openssl/x509.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -19,12 +20,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.4.0"
+#define BIUBIU_ACC_VERSION "0.5.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define MAX_RESPONSE_SIZE (4U * 1024U * 1024U)
 #define MAX_STATE_SIZE (1024U * 1024U)
 #define DEFAULT_DEVICE_ID_FILE "/etc/biubiu-acc/device-id"
 #define DEFAULT_SESSION_FILE "/etc/biubiu-acc/session.json"
+#define DEFAULT_ACCELERATION_KEY_FILE "/etc/biubiu-acc/acceleration-key.json"
 
 static const char public_key_pem[] =
     "-----BEGIN PUBLIC KEY-----\n"
@@ -48,6 +50,12 @@ struct response_buffer {
 struct adat_session_keys {
     unsigned char key[16];
     unsigned char iv[16];
+};
+
+struct acceleration_public_key {
+    int version;
+    EVP_PKEY *key;
+    char *der_b64;
 };
 
 static void bytes_free(struct bytes *value)
@@ -103,6 +111,93 @@ static int base64_decode(const char *input, struct bytes *output)
         padding++;
     output->len = (size_t)decoded_len - padding;
     output->data[output->len] = '\0';
+    return 0;
+}
+
+static void acceleration_public_key_free(struct acceleration_public_key *value)
+{
+    if (!value)
+        return;
+    EVP_PKEY_free(value->key);
+    free(value->der_b64);
+    memset(value, 0, sizeof(*value));
+}
+
+static int decode_acceleration_public_key(const char *encoded, EVP_PKEY **result)
+{
+    struct bytes der = {0};
+    const unsigned char *cursor;
+    EVP_PKEY *key = NULL;
+    int status = -1;
+
+    if (!encoded || !result)
+        return -1;
+    *result = NULL;
+    if (base64_decode(encoded, &der) != 0 || !der.len)
+        goto out;
+    cursor = der.data;
+    key = d2i_PUBKEY(NULL, &cursor, (long)der.len);
+    if (!key || cursor != der.data + der.len ||
+        EVP_PKEY_base_id(key) != EVP_PKEY_RSA || EVP_PKEY_bits(key) < 1024 ||
+        EVP_PKEY_bits(key) > 8192)
+        goto out;
+    *result = key;
+    key = NULL;
+    status = 0;
+
+out:
+    EVP_PKEY_free(key);
+    bytes_free(&der);
+    return status;
+}
+
+static int parse_key_version(const char *value, size_t length, int *version)
+{
+    uint64_t parsed = 0;
+    size_t i;
+
+    if (!value || !length || length > 10 || !version)
+        return -1;
+    for (i = 0; i < length; i++) {
+        if (value[i] < '0' || value[i] > '9')
+            return -1;
+        parsed = parsed * 10U + (unsigned int)(value[i] - '0');
+        if (parsed > INT32_MAX)
+            return -1;
+    }
+    if (!parsed)
+        return -1;
+    *version = (int)parsed;
+    return 0;
+}
+
+static int parse_security_key_value(const char *value,
+                                    struct acceleration_public_key *result)
+{
+    const char *separator;
+    const char *encoded;
+    EVP_PKEY *key = NULL;
+    char *encoded_copy = NULL;
+    int version;
+
+    if (!value || !result)
+        return -1;
+    memset(result, 0, sizeof(*result));
+    separator = strchr(value, '|');
+    if (!separator || strchr(separator + 1, '|') ||
+        parse_key_version(value, (size_t)(separator - value), &version) != 0)
+        return -1;
+    encoded = separator + 1;
+    if (!encoded[0] || decode_acceleration_public_key(encoded, &key) != 0)
+        return -1;
+    encoded_copy = strdup(encoded);
+    if (!encoded_copy) {
+        EVP_PKEY_free(key);
+        return -1;
+    }
+    result->version = version;
+    result->key = key;
+    result->der_b64 = encoded_copy;
     return 0;
 }
 
@@ -790,6 +885,181 @@ static const char *string_member(json_object *object, const char *name)
     return value ? json_object_get_string(value) : NULL;
 }
 
+static int store_acceleration_key(const char *path,
+                                  const struct acceleration_public_key *value)
+{
+    json_object *record = NULL;
+    const char *serialized;
+    int status = -1;
+
+    if (!path || !value || value->version < 1 || !value->key || !value->der_b64)
+        return -1;
+    record = json_object_new_object();
+    if (!record)
+        return -1;
+    json_object_object_add(record, "schemaVersion", json_object_new_int(1));
+    json_object_object_add(record, "keyVersion",
+                           json_object_new_int(value->version));
+    json_object_object_add(record, "publicKeyDer",
+                           json_object_new_string(value->der_b64));
+    serialized = json_object_to_json_string_ext(record, JSON_C_TO_STRING_PRETTY);
+    if (serialized)
+        status = atomic_private_write(path, (const unsigned char *)serialized,
+                                      strlen(serialized));
+    json_object_put(record);
+    return status;
+}
+
+static int load_acceleration_key(const char *path,
+                                 struct acceleration_public_key *result)
+{
+    struct bytes contents = {0};
+    json_object *record = NULL;
+    json_object *schema = NULL;
+    json_object *version = NULL;
+    const char *encoded;
+    int64_t version_number;
+    int status = -1;
+
+    if (!result)
+        return -1;
+    memset(result, 0, sizeof(*result));
+    if (read_private_file(path, &contents) != 0)
+        return -1;
+    record = json_tokener_parse((const char *)contents.data);
+    if (!record || !json_object_is_type(record, json_type_object) ||
+        !json_object_object_get_ex(record, "schemaVersion", &schema) ||
+        !json_object_is_type(schema, json_type_int) ||
+        json_object_get_int(schema) != 1 ||
+        !json_object_object_get_ex(record, "keyVersion", &version) ||
+        !json_object_is_type(version, json_type_int)) {
+        errno = EINVAL;
+        goto out;
+    }
+    version_number = json_object_get_int64(version);
+    encoded = string_member(record, "publicKeyDer");
+    if (version_number < 1 || version_number > INT32_MAX || !encoded ||
+        decode_acceleration_public_key(encoded, &result->key) != 0) {
+        errno = EINVAL;
+        goto out;
+    }
+    result->der_b64 = strdup(encoded);
+    if (!result->der_b64)
+        goto out;
+    result->version = (int)version_number;
+    status = 0;
+
+out:
+    if (status != 0)
+        acceleration_public_key_free(result);
+    json_object_put(record);
+    bytes_free(&contents);
+    return status;
+}
+
+static int acceleration_key_fingerprint(const char *encoded, char output[65])
+{
+    struct bytes der = {0};
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_length = 0;
+    size_t i;
+    int status = -1;
+
+    if (!encoded || !output || base64_decode(encoded, &der) != 0 ||
+        EVP_Digest(der.data, der.len, digest, &digest_length, EVP_sha256(), NULL) !=
+            1 ||
+        digest_length != 32)
+        goto out;
+    for (i = 0; i < digest_length; i++)
+        snprintf(output + i * 2, 3, "%02x", digest[i]);
+    output[64] = '\0';
+    status = 0;
+
+out:
+    OPENSSL_cleanse(digest, sizeof(digest));
+    bytes_free(&der);
+    return status;
+}
+
+static int print_acceleration_key_summary(bool cached,
+                                          const struct acceleration_public_key *key)
+{
+    json_object *summary = NULL;
+    char fingerprint[65] = {0};
+    int status = 1;
+
+    if (cached && (!key || !key->key || !key->der_b64 ||
+                   acceleration_key_fingerprint(key->der_b64, fingerprint) != 0))
+        return 1;
+    summary = json_object_new_object();
+    if (!summary)
+        return 1;
+    json_object_object_add(summary, "cached", json_object_new_boolean(cached));
+    if (cached) {
+        json_object_object_add(summary, "keyVersion",
+                               json_object_new_int(key->version));
+        json_object_object_add(summary, "rsaBits",
+                               json_object_new_int(EVP_PKEY_bits(key->key)));
+        json_object_object_add(summary, "fingerprintSha256",
+                               json_object_new_string(fingerprint));
+    }
+    puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+    status = 0;
+    json_object_put(summary);
+    OPENSSL_cleanse(fingerprint, sizeof(fingerprint));
+    return status;
+}
+
+static int print_acceleration_key_status(const char *path)
+{
+    struct acceleration_public_key key = {0};
+    int status;
+
+    if (load_acceleration_key(path, &key) == 0) {
+        status = print_acceleration_key_summary(true, &key);
+    } else if (errno == ENOENT) {
+        status = print_acceleration_key_summary(false, NULL);
+    } else {
+        fprintf(stderr, "unable to read acceleration key cache: %s\n",
+                strerror(errno));
+        status = 1;
+    }
+    acceleration_public_key_free(&key);
+    return status;
+}
+
+static int import_acceleration_key(const char *source_path, const char *cache_path)
+{
+    struct bytes source = {0};
+    struct acceleration_public_key key = {0};
+    int status = 1;
+
+    if (read_private_file(source_path, &source) != 0) {
+        fprintf(stderr, "unable to read private acceleration key input: %s\n",
+                strerror(errno));
+        goto out;
+    }
+    while (source.len && (source.data[source.len - 1] == '\n' ||
+                          source.data[source.len - 1] == '\r'))
+        source.data[--source.len] = '\0';
+    if (!source.len || parse_security_key_value((const char *)source.data, &key) !=
+                           0) {
+        fputs("invalid acceleration key; expected VERSION|BASE64_DER\n", stderr);
+        goto out;
+    }
+    if (store_acceleration_key(cache_path, &key) != 0) {
+        fprintf(stderr, "unable to store acceleration key cache: %s\n",
+                strerror(errno));
+        goto out;
+    }
+    status = print_acceleration_key_summary(true, &key);
+
+out:
+    acceleration_public_key_free(&key);
+    bytes_free(&source);
+    return status;
+}
+
 static json_object *session_info_from_record(json_object *record)
 {
     json_object *login = object_member(record, "login", json_type_object);
@@ -1272,6 +1542,63 @@ static EVP_PKEY *new_test_rsa_key(void)
     return key;
 }
 
+static int run_acceleration_key_store_self_test(void)
+{
+    char directory_template[] = "/tmp/biubiu-key-selftest.XXXXXX";
+    char *directory = NULL;
+    char *path = NULL;
+    char *encoded = NULL;
+    char *security_value = NULL;
+    unsigned char *der = NULL;
+    EVP_PKEY *generated = NULL;
+    struct acceleration_public_key parsed = {0};
+    struct acceleration_public_key loaded = {0};
+    struct acceleration_public_key unsafe = {0};
+    struct stat info;
+    int der_length;
+    int result = 1;
+
+    directory = mkdtemp(directory_template);
+    generated = new_test_rsa_key();
+    if (!directory || !generated || asprintf(&path, "%s/key.json", directory) < 0)
+        goto out;
+    der_length = i2d_PUBKEY(generated, &der);
+    if (der_length <= 0)
+        goto out;
+    encoded = base64_encode(der, (size_t)der_length);
+    if (!encoded || asprintf(&security_value, "7|%s", encoded) < 0 ||
+        parse_security_key_value(security_value, &parsed) != 0 ||
+        parsed.version != 7 || strcmp(parsed.der_b64, encoded) != 0 ||
+        store_acceleration_key(path, &parsed) != 0 || stat(path, &info) != 0 ||
+        (info.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
+        load_acceleration_key(path, &loaded) != 0 || loaded.version != 7 ||
+        strcmp(loaded.der_b64, encoded) != 0 ||
+        EVP_PKEY_bits(loaded.key) != EVP_PKEY_bits(generated))
+        goto out;
+    if (chmod(path, S_IRUSR | S_IWUSR | S_IRGRP) != 0 ||
+        load_acceleration_key(path, &unsafe) == 0 || errno != EACCES ||
+        chmod(path, S_IRUSR | S_IWUSR) != 0)
+        goto out;
+    result = 0;
+
+out:
+    if (result != 0)
+        fputs("acceleration key store self-test failed\n", stderr);
+    acceleration_public_key_free(&unsafe);
+    acceleration_public_key_free(&loaded);
+    acceleration_public_key_free(&parsed);
+    EVP_PKEY_free(generated);
+    OPENSSL_free(der);
+    free(encoded);
+    free(security_value);
+    if (path)
+        unlink(path);
+    if (directory)
+        rmdir(directory);
+    free(path);
+    return result;
+}
+
 static int run_adat_cipher_self_test(void)
 {
     EVP_PKEY *rsa_key = NULL;
@@ -1437,10 +1764,12 @@ out:
 static int run_self_test(void)
 {
     if (run_login_cipher_self_test() != 0 || run_adat_cipher_self_test() != 0 ||
+        run_acceleration_key_store_self_test() != 0 ||
         run_session_storage_self_test() != 0)
         return 1;
     puts("{\"success\":true,\"tests\":[\"account-envelope\","
-         "\"acceleration-adat\",\"private-session-store\"]}");
+         "\"acceleration-adat\",\"acceleration-key-store\","
+         "\"private-session-store\"]}");
     return 0;
 }
 
@@ -1452,6 +1781,7 @@ static void usage(FILE *stream)
             "  --device-id UUID       Override the persistent device identity\n"
             "  --device-id-file PATH  Device identity file (default: %s)\n"
             "  --session-file PATH    Private session file (default: %s)\n"
+            "  --acc-key-file PATH    Acceleration public-key cache (default: %s)\n"
             "Commands:\n"
             "  qr-start          Create a QR login challenge\n"
             "  qr-poll TOKEN     Query a QR login challenge\n"
@@ -1464,9 +1794,13 @@ static void usage(FILE *stream)
             "                    Prompt privately for a password and log in\n"
             "  session-status    Print redacted local session state\n"
             "  session-refresh   Refresh and atomically replace the session\n"
+            "  acc-key-import PATH\n"
+            "                    Import VERSION|BASE64_DER from a private file\n"
+            "  acc-key-status    Print version and fingerprint, never key data\n"
             "  self-test         Verify ciphers and private session storage\n"
             "  version           Print the program version\n",
-            DEFAULT_DEVICE_ID_FILE, DEFAULT_SESSION_FILE);
+            DEFAULT_DEVICE_ID_FILE, DEFAULT_SESSION_FILE,
+            DEFAULT_ACCELERATION_KEY_FILE);
 }
 
 int main(int argc, char **argv)
@@ -1474,6 +1808,7 @@ int main(int argc, char **argv)
     const char *explicit_device_id = NULL;
     const char *device_id_file = DEFAULT_DEVICE_ID_FILE;
     const char *session_file = DEFAULT_SESSION_FILE;
+    const char *acceleration_key_file = DEFAULT_ACCELERATION_KEY_FILE;
     const char *store_method = NULL;
     char *device_id = NULL;
     const char *command;
@@ -1497,6 +1832,9 @@ int main(int argc, char **argv)
         } else if (strcmp(option, "--session-file") == 0 && index + 1 < argc) {
             session_file = argv[index + 1];
             index += 2;
+        } else if (strcmp(option, "--acc-key-file") == 0 && index + 1 < argc) {
+            acceleration_key_file = argv[index + 1];
+            index += 2;
         } else {
             break;
         }
@@ -1516,6 +1854,15 @@ int main(int argc, char **argv)
         return run_self_test();
     if (strcmp(command, "session-status") == 0 && argument_count == 0)
         return print_session_status(session_file);
+    if (strcmp(command, "acc-key-status") == 0 && argument_count == 0)
+        return print_acceleration_key_status(acceleration_key_file);
+    if (strcmp(command, "acc-key-import") == 0 && argument_count == 1)
+        return import_acceleration_key(arguments[0], acceleration_key_file);
+    if (strcmp(command, "acc-key-status") == 0 ||
+        strcmp(command, "acc-key-import") == 0) {
+        usage(stderr);
+        return 2;
+    }
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         fprintf(stderr, "unable to initialize HTTP client\n");

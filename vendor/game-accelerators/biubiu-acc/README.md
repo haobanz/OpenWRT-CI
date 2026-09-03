@@ -7,7 +7,7 @@ captured sessions, or code copied from a decompiler.
 ## Current milestone
 
 The `biubiu-accctl` binary implements the independently verified account
-envelope and three user-authorized login methods. Version 0.4.0 also adds an
+envelope and three user-authorized login methods. Version 0.5.0 also adds an
 independent, offline-tested codec for the acceleration API's separate ADAT
 envelope and private OpenWrt session persistence:
 
@@ -23,17 +23,19 @@ envelope and private OpenWrt session persistence:
 - persistent device identity and mode `0600` account session files;
 - atomic session replacement, redacted status output, and session refresh;
 - rejection of symlinked, foreign-owned, or group/world-accessible state files.
+- external acceleration RSA public-key validation, private caching, and
+  redacted version/fingerprint status.
 
 The QR exchange, a user-authorized SMS exchange, and session refresh were
 verified against the production service on 2026-09-03. Password endpoint
 validation used deliberately invalid credentials; no password was retained.
 Both the reference lab and OpenWrt C clients persist and refresh a session
-atomically without printing its credentials. The acceleration codec is
-validated offline with a generated RSA key; it does not embed the app's
-protected bootstrap value and does not contact the acceleration service during
-tests. Transport acceleration is not implemented in this milestone, so the
-package is built as an installable test artifact and is not installed in the
-firmware image yet.
+atomically without printing its credentials. The acceleration codec and key
+cache are validated offline with generated RSA keys; they do not embed the
+app's protected bootstrap value and do not contact the acceleration service
+during tests. Transport acceleration is not implemented in this milestone, so
+the package is built as an installable test artifact and is not installed in
+the firmware image yet.
 
 ## Usage
 
@@ -77,6 +79,20 @@ biubiu-accctl session-refresh
 `--device-id-file` and `--session-file` can override the two default absolute
 paths for testing. The future LuCI flow will call these commands and will never
 place credentials in UCI.
+
+The acceleration bootstrap is deliberately external. Prepare a root-owned,
+mode `0600` file containing the provider-compatible value in the exact form
+`VERSION|BASE64_X509_DER`, then import it and inspect only its non-secret
+metadata:
+
+```sh
+biubiu-accctl acc-key-import /tmp/security-key.txt
+biubiu-accctl acc-key-status
+```
+
+The validated cache is `/etc/biubiu-acc/acceleration-key.json` by default and
+is retained across sysupgrade. `--acc-key-file` selects a different absolute
+cache path for testing. Import does not initiate an acceleration request.
 
 Run the local cipher check with:
 

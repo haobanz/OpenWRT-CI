@@ -29,12 +29,13 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.4.0 completes the QR, phone SMS, hidden password, and session-refresh
+- Version 0.5.0 completes the QR, phone SMS, hidden password, and session-refresh
   account paths in the OpenWrt C client. Device identity and account sessions
   use private persistent files, successful login output is redacted, and refresh
   replaces a session atomically. It also includes an offline-tested codec for
-  the acceleration API's separate key/IV ADAT envelope without embedding its
-  protected bootstrap value.
+  the acceleration API's separate key/IV ADAT envelope. An external
+  `version|base64(X.509 DER)` public key can be validated and cached in a
+  root-only file without embedding the app's protected bootstrap value.
 - CI builds it as a standalone APK, but it is not installed in the firmware
   until game profile, node selection, and transport steering have all passed
   router tests.
