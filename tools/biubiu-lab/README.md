@@ -61,6 +61,12 @@ service ticket and business user ID only into a copied `client.ex` object and
 rejects conflicting account data. It does not send requests or generate the
 mobile security SDK's anti-abuse headers.
 
+`biubiu_profile_model.py` parses the observed JSON engine-profile boundary. It
+normalizes TUN CIDRs and route ports, validates outbound references, and models
+the TCP, UDP, and ICMP Bolt channel descriptors. Signal tickets and opaque
+channel parameters are excluded from object representations so test failures
+cannot print them. This parser does not implement or contact the data channel.
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v

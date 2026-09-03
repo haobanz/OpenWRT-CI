@@ -181,3 +181,24 @@ Windows process scanner on the accelerated machine.
 The transport layer is not assumed to be ordinary HTTP, SOCKS, or a standard
 VPN. Known names such as Bolt, KCP, UOT, and FEC are treated only as clues
 until packet formats and state transitions are verified.
+
+## Mobile engine boundary
+
+Static analysis separates the router installer from the packet engine. The
+router helper only discovers, installs, and controls the official router
+daemon. The mobile packet path is implemented by a separate AArch64 Android
+JNI library and exposes initialization, start/stop, mode, rule, network-change,
+socket-protection, asset-loading, and TUN callbacks.
+
+The Android service creates the TUN and detaches its file descriptor to the
+native engine. The observed default TUN network is `10.222.0.1/16`. Engine
+profiles are converted into a typed boundary containing TUN routes, DNS,
+domain/IP/port routing rules, host mappings, flow limits, detect tasks, signal
+configuration, and TCP/UDP/ICMP Bolt channel descriptors. The native engine
+contains its own TCP/UDP stack and signal heartbeat/channel-ticket renewal.
+
+The Android binary is not portable to OpenWrt: it is JNI-bound and dynamically
+depends on Android system libraries. It is therefore an interoperability
+reference only and is neither vendored nor redistributed. The router-native
+implementation requires a clean Linux TUN adapter and an independently
+implemented, runtime-verified data channel.
