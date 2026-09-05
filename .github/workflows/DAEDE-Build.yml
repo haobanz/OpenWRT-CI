@@ -134,7 +134,7 @@ jobs:
           sudo -E apt-get install -y dos2unix gawk libfuse-dev python3-cryptography \
             libcurl4-openssl-dev libjson-c-dev libssl-dev
           sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          sudo -E apt-get install -y dwarves
+          sudo -E apt-get install -y dwarves nodejs
           command -v pahole
           pahole --version
           sudo -E timedatectl set-timezone Asia/Shanghai || true
@@ -146,6 +146,7 @@ jobs:
           set -Eeuo pipefail
           python3 -B -m unittest discover \
             -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
+          node tools/biubiu-lab/test_biubiu_luci_official_picker.js
           cc -std=c11 -Wall -Wextra -Wformat=2 -Werror \
             -o "$RUNNER_TEMP/biubiu-accctl-host" \
             vendor/game-accelerators/biubiu-acc/src/biubiu-accctl.c \
@@ -356,7 +357,7 @@ jobs:
             OpenClash/dae 绕过加速设备。
 
             固件预装实验性的 biubiu-acc 与 LuCI 页面，Release 也附带两个独立
-            APK。0.10.1 核心已在账号本人授权下完成真实 ADAT 信令登录、通道
+            APK。核心已在账号本人授权下完成真实 ADAT 信令登录、通道
             续期和经典 Bolt TCP/UDP 绑定。实测 7 条 TCP、7 条 UDP 通道全部
             绑定成功；生产 TCP 转发收到 HTTP 301，UDP 查询收到 2 条 DNS
             结果并通过会话、端点校验。核心使用与已验证传输一致的经典兼容版本，
@@ -364,15 +365,17 @@ jobs:
             BBNET 传输实现，不将经典配置强行送入 BBNET。支持二维码、短信
             验证码和隐藏输入密码登录，账号及节点凭据保存在 root 私有目录；
             仅内置厂商公开 RSA 材料，不包含私钥或捕获的会话。LuCI 支持短信
-            登录、整个 LAN 或指定设备作用域、Steam/CS2/Epic 内置选择、配置预检、
+            登录、整个 LAN 或指定设备作用域、Steam/CS2/Epic 内置匹配、配置预检、
             自检、日志和只读实时匹配观测，原始 ID 收入高级设置，procd 管理进程
             默认关闭。游戏控制 API、节点/通道授权、经典 TCP/UDP 数据通道、root 私有 runtime
             和 nftables TPROXY 接管已经实现；LuCI 提供权益检查、节点获取、通道
             登录/续期以及启动/停止加速。启动前必须具备授权 runtime，且默认以
             独占模式停止并在停止后恢复 OpenClash，失败会清理接管规则。
             当前在线验证在本地开发机完成，路由器上的 Steam/CS2 实机接管仍待
-            验收。官方游戏目录、区服及入口/节点联动选择界面仍在适配，不能将
-            底层收发成功等同于完整客户端交互已完成。
+            验收。0.11.0 核心与 0.10.0 LuCI 已加入官方游戏搜索、区服及模式
+            联动选择，保存前校验所属关系；只向页面返回公开元数据，不返回账号
+            原始响应。配置变化会使旧通道失效。手动入口/节点选择仍未接入，
+            当前由服务端自动分配；底层收发成功不等同于完整客户端交互已完成。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。

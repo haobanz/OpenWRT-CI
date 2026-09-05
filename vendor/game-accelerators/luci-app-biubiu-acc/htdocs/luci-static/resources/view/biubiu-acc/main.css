@@ -175,6 +175,106 @@
 	line-height: 1.4;
 }
 
+.bba-official-modal {
+	width: min(680px, 100%);
+	min-width: 0;
+}
+
+.bba-provider-picker,
+.bba-picker-error {
+	min-width: 0;
+}
+
+.bba-provider-search,
+.bba-picker-pagination {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 12px;
+}
+
+.bba-provider-search input {
+	flex: 1 1 240px;
+	min-width: 0;
+	min-height: 38px;
+	box-sizing: border-box;
+}
+
+.bba-provider-game-list {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.bba-provider-game {
+	display: block;
+	min-width: 0;
+	min-height: 66px;
+	padding: 10px 12px;
+	text-align: left;
+	white-space: normal;
+}
+
+.bba-provider-game strong,
+.bba-provider-game small {
+	display: block;
+	overflow-wrap: anywhere;
+}
+
+.bba-provider-game small {
+	margin-top: 4px;
+	color: var(--bba-muted);
+}
+
+.bba-picker-pagination {
+	justify-content: flex-end;
+	margin: 14px 0 0;
+}
+
+.bba-picker-pagination .bba-muted {
+	min-width: 54px;
+	text-align: center;
+}
+
+.bba-picker-selected {
+	margin: 0 0 13px;
+	overflow-wrap: anywhere;
+}
+
+.bba-mode-note,
+.bba-section-note {
+	margin-top: 5px;
+	line-height: 1.45;
+}
+
+.bba-selection-summary {
+	display: grid;
+	grid-template-columns: minmax(105px, 170px) minmax(0, 1fr);
+	margin: 0;
+	border: 1px solid var(--bba-border);
+}
+
+.bba-selection-summary dt,
+.bba-selection-summary dd {
+	min-width: 0;
+	margin: 0;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--bba-border);
+	overflow-wrap: anywhere;
+}
+
+.bba-selection-summary dt {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--bba-muted);
+	background: var(--bba-panel);
+}
+
+.bba-selection-summary dt:nth-last-of-type(1),
+.bba-selection-summary dd:last-child {
+	border-bottom: 0;
+}
+
 .bba-table-wrap {
 	overflow-x: auto;
 	border: 1px solid var(--bba-border);
@@ -289,4 +389,9 @@
 	.bba-game-grid { grid-template-columns: 1fr; }
 	.bba-segmented { width: 100%; }
 	.bba-segmented .cbi-button { flex: 1 1 0; }
+	.bba-provider-search { align-items: stretch; }
+	.bba-provider-search .cbi-button { flex: 0 0 auto; }
+	.bba-provider-game-list { grid-template-columns: 1fr; }
+	.bba-picker-pagination { justify-content: space-between; }
+	.bba-selection-summary { grid-template-columns: minmax(84px, 115px) minmax(0, 1fr); }
 }

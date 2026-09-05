@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-biubiu-acc
-PKG_VERSION:=0.9.0
+PKG_VERSION:=0.10.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -14,12 +14,14 @@ define Package/luci-app-biubiu-acc
   SUBMENU:=3. Applications
   TITLE:=LuCI manager for the clean-room biubiu client
   DEPENDS:=+luci-base +biubiu-acc
+  EXTRA_DEPENDS:=biubiu-acc (>=0.11.0)
   PKGARCH:=all
 endef
 
 define Package/luci-app-biubiu-acc/description
   LuCI interface for account sessions, whole-LAN or device scope, built-in game
-  selection, diagnostics, and staged acceleration profile management.
+  matching, official game/area/mode selection, diagnostics, and acceleration
+  profile management. Requires the biubiu-acc 0.11.0 control boundary or newer.
 endef
 
 define Build/Compile

@@ -53,6 +53,10 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         self.assertNotIn('"/usr/bin/biubiu-accctl *"', acl)
         self.assertNotIn('"/bin/sh *"', acl)
 
+    def test_official_picker_requires_matching_control_package(self) -> None:
+        makefile = (LUCI / "Makefile").read_text()
+        self.assertIn("EXTRA_DEPENDS:=biubiu-acc (>=0.11.0)", makefile)
+
     def test_transport_is_gated_by_authorized_runtime(self) -> None:
         manager = (CORE / "files/biubiu-acc-manager").read_text()
         supervisor = (CORE / "files/biubiu-acc-supervisor").read_text()
@@ -283,13 +287,13 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         self.assertIn("获取节点并授权", ui)
         self.assertIn("pc-user-sync", flow)
         self.assertIn("pc-game-map", flow)
-        self.assertIn("pc-context-start", flow)
+        self.assertIn("start_control_context", flow)
         self.assertIn("pc-check-speedup", flow)
         self.assertIn("pc-profile-fetch", flow)
         self.assertIn("pc-signal-login", flow)
         self.assertIn("pc-runtime-prepare", flow)
-        self.assertIn("hasBuiltinPcProfile", ui)
-        self.assertLess(flow.index("pc-game-map"), flow.index("pc-context-start"))
+        self.assertIn("game_options", ui)
+        self.assertLess(flow.index("pc-game-map"), flow.index("start_control_context"))
 
     def test_native_start_context_is_derived_from_provider_metadata(self) -> None:
         control = (CORE / "src/biubiu-accctl.c").read_text()
@@ -310,7 +314,7 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         self.assertNotIn("SERVER_ID SPEEDUP_MODEL_ID", control)
         self.assertIn("CONTROL_PLATFORM_ID=6", manager)
         self.assertNotIn("CONTROL_PLATFORM_NAME", manager)
-        self.assertNotIn("CONTROL_ACC_MODE", manager)
+        self.assertIn('"$CONTROL_ACC_MODE"', manager)
         self.assertIn("platform_id=6", supervisor)
         self.assertIn("pc-game-map.json", upgrade)
         self.assertIn("biubiu_accctl_context_test.c", workflow)

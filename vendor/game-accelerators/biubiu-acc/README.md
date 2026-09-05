@@ -74,7 +74,7 @@ generated or synthetic values. The package contains only provider public RSA
 material, never a private key, and its tests do not contact the acceleration
 service.
 Both `biubiu-acc` and
-`luci-app-biubiu-acc` are preinstalled in the NN6000 firmware. The 0.10.0
+`luci-app-biubiu-acc` are preinstalled in the NN6000 firmware. The core
 package can start the native TCP/UDP data path only after the account, ADAT
 key, provider profile, channel authorization, and runtime file are all
 present. It refuses to start when any prerequisite is missing. Static analysis
@@ -91,6 +91,20 @@ declaring `5.0.2.64` selects a different BoltNext UDP protocol. The router's
 actual Steam/CS2 TPROXY workflow still needs an on-device acceptance run.
 
 ## Usage
+
+In LuCI, open `Acceleration configuration -> Select official game`, search the
+provider catalog, then select an area and an optional acceleration mode. Saving
+validates the game/area/platform/mode tuple against the provider map before
+invalidating any old channel state. Names are taken from that map, not trusted
+from the browser. A failed lookup leaves the running configuration unchanged.
+Automatic mode follows the provider's default; the provider's process mode does
+not give a router process-level visibility into LAN devices. Node assignment is
+currently automatic; manual node/entry selection is not implemented.
+
+The separate built-in Steam/CS2/Epic checkboxes select LAN traffic hints, not the
+provider's acceleration game. An empty initial provider catalog is valid; search
+can still return games. Search, area and mode responses expose only public
+allowlisted metadata, never raw account or profile responses.
 
 The package retains one device UUID in `/etc/biubiu-acc/device-id` and stores a
 successful login in `/etc/biubiu-acc/session.json`. Both files are mode `0600`;
@@ -184,18 +198,18 @@ biubiu-accctl self-test
 After logging in, the control-plane sequence is:
 
 ```sh
-biubiu-accctl game-list
-biubiu-accctl service-config-fetch
 biubiu-accctl pc-game-list
 biubiu-accctl pc-game-search CS2
-biubiu-accctl pc-game-profile GAME_ID
+biubiu-accctl pc-game-catalog
+biubiu-accctl pc-game-map GAME_ID
+biubiu-accctl pc-game-options GAME_ID
+biubiu-accctl pc-game-selection GAME_ID AREA_ID PLATFORM_ID [ACC_MODE]
 biubiu-accctl pc-user-sync
+biubiu-accctl pc-context-start GAME_ID AREA_ID PLATFORM_ID [ACC_MODE]
 biubiu-accctl pc-check-speedup GAME_ID AREA_ID [POLLING LAST_JITTER_TIME]
 biubiu-accctl pc-profile-fetch GAME_ID AREA_ID
-biubiu-accctl check-speedup GAME_ID AREA_ID
-biubiu-accctl profile-fetch GAME_ID AREA_ID PLATFORM_ID
-biubiu-accctl signal-login GAME_ID AREA_ID PLATFORM_ID
-biubiu-accctl runtime-prepare
+biubiu-accctl pc-signal-login GAME_ID AREA_ID PLATFORM_ID
+biubiu-accctl pc-runtime-prepare
 ```
 
 `game-list` is the provider's basic catalog. `pc-game-list` uses the full game
@@ -215,7 +229,7 @@ Windows request sends `gameId`, `areaId`, `polling`, and
 official UDP lighthouse schedule, and sends the measured main and transfer
 results to the native PC speedup-profile endpoint.
 
-`channel-renew` repeats the channel authorization step when the provider ticket
+`pc-channel-renew` repeats the channel authorization step when the provider ticket
 is near expiry. The supervisor renews before expiry, rebuilds the runtime from
 the new ticket, and reloads nftables/biubiu-accd without temporarily restoring
 OpenClash. A failed renewal keeps acceleration enabled for a bounded retry and

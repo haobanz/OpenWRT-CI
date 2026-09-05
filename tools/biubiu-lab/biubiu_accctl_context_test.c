@@ -124,6 +124,60 @@ out:
     return status;
 }
 
+static int test_public_game_catalog(void)
+{
+    static const char fixture[] =
+        "{\"code\":200,\"secret\":\"do-not-return-root\",\"data\":{"
+        "\"success\":true,\"hasNextPage\":true,\"ticket\":\"do-not-return-data\","
+        "\"list\":[{\"gameInfo\":{\"gameId\":38780,\"gameName\":\"Counter-Strike 2\","
+        "\"platformId\":6,\"token\":\"do-not-return-info\"},\"areaList\":["
+        "{\"areaId\":146,\"name\":\"Auto\",\"ticket\":\"do-not-return-area\"},"
+        "{\"areaId\":103,\"name\":\"HK\"},{\"areaId\":103,\"name\":\"Duplicate\"},"
+        "{\"areaId\":0,\"name\":\"Invalid\"},{\"areaId\":123,\"name\":\"Bad\\nName\"}],"
+        "\"speedupModelList\":[{\"speedupModelId\":3,\"speedupModelName\":\"Process\"},"
+        "{\"speedupModelId\":5,\"speedupModelName\":\"Route\"},"
+        "{\"speedupModelId\":8,\"speedupModelName\":\"Unknown\"}]},"
+        "{\"gameInfo\":{\"gameId\":2,\"gameName\":\"Bad\\u0000Name\",\"platformId\":6}},"
+        "{\"gameInfo\":{\"gameId\":3,\"gameName\":\"Bad platform\",\"platformId\":11}},"
+        "{\"gameInfo\":{\"gameId\":\"4\",\"gameName\":\"Wrong ID type\",\"platformId\":6}}]}}";
+    json_object *response = json_tokener_parse(fixture);
+    json_object *catalog = NULL, *options = NULL, *game, *games;
+    const char *serialized;
+    int status = -1;
+
+    if (!response || !(catalog = pc_catalog_summary(response, 0)) ||
+        !(options = pc_catalog_summary(response, 38780)))
+        goto out;
+    serialized = json_object_to_json_string_ext(catalog, JSON_C_TO_STRING_PLAIN);
+    if (strstr(serialized, "do-not-return") || strstr(serialized, "gameInfo") ||
+        !json_object_get_boolean(object_member(catalog, "has_next_page", json_type_boolean)))
+        goto out;
+    games = object_member(catalog, "games", json_type_array);
+    if (json_object_array_length(games) != 1)
+        goto out;
+    game = json_object_array_get_idx(games, 0);
+    if (strcmp(string_member(game, "id"), "38780") ||
+        strcmp(string_member(game, "platform_id"), "6") ||
+        strcmp(string_member(game, "name"), "Counter-Strike 2"))
+        goto out;
+    serialized = json_object_to_json_string_ext(options, JSON_C_TO_STRING_PLAIN);
+    game = object_member(options, "game", json_type_object);
+    if (strstr(serialized, "do-not-return") ||
+        json_object_array_length(object_member(game, "areas", json_type_array)) != 2 ||
+        json_object_array_length(object_member(game, "modes", json_type_array)) != 2 ||
+        pc_catalog_summary(response, 999) != NULL)
+        goto out;
+    json_object_object_add(response, "code", json_object_new_int(403));
+    if (pc_catalog_summary(response, 0) != NULL)
+        goto out;
+    status = 0;
+out:
+    json_object_put(catalog);
+    json_object_put(options);
+    json_object_put(response);
+    return status;
+}
+
 int main(void)
 {
     static const char map_json[] =
@@ -149,6 +203,7 @@ int main(void)
 
     if (!map || !fallback || !context || test_platform_names() != 0 ||
         test_httpdns_contract() != 0 || test_native_control_api_routes() != 0 ||
+        test_public_game_catalog() != 0 ||
         parse_nonnegative_argument("0", INT32_MAX, &polling) != 0 ||
         polling != 0 || parse_unsigned_argument("0", INT32_MAX, &polling) == 0)
         goto out;
@@ -197,6 +252,6 @@ out:
          "\"provider-area-check\",\"selected-first-mode-list\","
          "\"official-mode-fallback\",\"zero-polling\","
          "\"profile-context-binding\",\"official-httpdns-contract\","
-         "\"native-control-api-route\"]}");
+         "\"native-control-api-route\",\"public-game-catalog\"]}");
     return 0;
 }

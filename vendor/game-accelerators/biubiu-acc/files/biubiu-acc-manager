@@ -289,7 +289,8 @@ load_control_ids() {
 	CONTROL_GAME_ID="$(uci_get main target_id '')"
 	CONTROL_AREA_ID="$(uci_get main area_id '')"
 	CONTROL_PLATFORM_ID="$(uci_get main platform_id '')"
-	if [ -z "$CONTROL_GAME_ID" ] || [ -z "$CONTROL_AREA_ID" ] ||
+	CONTROL_ACC_MODE="$(uci_get main acc_mode '')"
+	if [ -z "$CONTROL_GAME_ID" ] && [ -z "$CONTROL_AREA_ID" ] &&
 		[ -z "$CONTROL_PLATFORM_ID" ]; then
 		config_load "$CONFIG"
 		if config_list_foreach main selected_game print_selected_game |
@@ -299,18 +300,26 @@ load_control_ids() {
 			CONTROL_PLATFORM_ID=6
 		fi
 	fi
-	decimal_value "$CONTROL_GAME_ID" 20 || fail '请先在高级参数中填写有效的游戏 ID'
-	decimal_value "$CONTROL_AREA_ID" 20 || fail '请先在高级参数中填写有效的区服 ID'
-	decimal_value "$CONTROL_PLATFORM_ID" 20 || fail '请先在高级参数中填写有效的平台 ID'
+	decimal_value "$CONTROL_GAME_ID" 10 || fail '请先选择有效的加速游戏'
+	decimal_value "$CONTROL_AREA_ID" 10 || fail '请先选择有效的区服'
+	decimal_value "$CONTROL_PLATFORM_ID" 2 || fail '游戏平台无效'
+	case "$CONTROL_ACC_MODE" in ''|3|4|5) ;; *) fail '加速模式无效' ;; esac
 	[ "$CONTROL_PLATFORM_ID" -ge 1 ] 2>/dev/null &&
 		[ "$CONTROL_PLATFORM_ID" -le 10 ] 2>/dev/null ||
 		fail '平台 ID 必须在 1 到 10 之间'
 }
 
+start_control_context() {
+	set -- "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" "$CONTROL_PLATFORM_ID"
+	[ -z "$CONTROL_ACC_MODE" ] || set -- "$@" "$CONTROL_ACC_MODE"
+	run_cli pc-context-start pc-context-start "$@"
+}
+
 control_game_list() {
 	run_cli pc-game-list pc-game-list || exit 1
+	run_cli pc-game-catalog pc-game-catalog || exit 1
 	log_event info control 'Game catalog refreshed from provider'
-	emit_message '在线游戏目录已刷新'
+	cat "$TEMP_PREFIX.out"
 }
 
 control_game_search() {
@@ -320,20 +329,29 @@ control_game_search() {
 	size="$(request_value size)"
 	safe_text "$keyword" 128 || fail '搜索关键词无效'
 	[ -n "$page" ] || page=1
-	[ -n "$size" ] || size=50
+	[ -n "$size" ] || size=12
 	decimal_value "$page" 6 || fail '搜索页码无效'
 	decimal_value "$size" 4 || fail '搜索数量无效'
-	run_cli game-search game-search "$keyword" "$page" "$size" || exit 1
+	run_cli pc-game-search pc-game-search "$keyword" "$page" "$size" || exit 1
+	run_cli pc-game-catalog pc-game-catalog || exit 1
 	log_event info control 'Provider game search completed'
-	emit_message '游戏搜索已完成，原始结果已安全缓存'
+	cat "$TEMP_PREFIX.out"
+}
+
+control_game_options() {
+	local game_id
+	game_id="$(request_value game_id)"
+	decimal_value "$game_id" 10 || fail '游戏 ID 无效'
+	run_cli pc-game-map pc-game-map "$game_id" || exit 1
+	run_cli pc-game-options pc-game-options "$game_id" || exit 1
+	cat "$TEMP_PREFIX.out"
 }
 
 control_check_speedup() {
 	load_control_ids
 	run_cli pc-user-sync pc-user-sync || exit 1
 	run_cli pc-game-map pc-game-map "$CONTROL_GAME_ID" || exit 1
-	run_cli pc-context-start pc-context-start "$CONTROL_GAME_ID" \
-		"$CONTROL_AREA_ID" "$CONTROL_PLATFORM_ID" || exit 1
+	start_control_context || exit 1
 	run_cli pc-check-speedup pc-check-speedup "$CONTROL_GAME_ID" \
 		"$CONTROL_AREA_ID" || exit 1
 	log_event info control 'Speedup entitlement checked'
@@ -346,8 +364,7 @@ control_profile_fetch() {
 	# expired or unauthorized account cannot leave a misleading runtime state.
 	run_cli pc-user-sync pc-user-sync || exit 1
 	run_cli pc-game-map pc-game-map "$CONTROL_GAME_ID" || exit 1
-	run_cli pc-context-start pc-context-start "$CONTROL_GAME_ID" \
-		"$CONTROL_AREA_ID" "$CONTROL_PLATFORM_ID" || exit 1
+	start_control_context || exit 1
 	run_cli pc-check-speedup pc-check-speedup "$CONTROL_GAME_ID" \
 		"$CONTROL_AREA_ID" || exit 1
 	run_cli pc-profile-fetch pc-profile-fetch "$CONTROL_GAME_ID" \
@@ -472,6 +489,7 @@ snapshot() {
 	local traffic_json traffic_active traffic_pid traffic_message
 	local scope selected_games selected_game_count game
 	local target_name target_ip target_mac target_id area_id platform_id log_level
+	local game_name area_name acc_mode
 	local pid rss uptime_seconds process_start boot_seconds clock_ticks
 
 	version="$($CLI version 2>/dev/null | awk '{print $2; exit}')"
@@ -498,6 +516,9 @@ snapshot() {
 	target_id="$(uci_get main target_id '')"
 	area_id="$(uci_get main area_id '')"
 	platform_id="$(uci_get main platform_id '')"
+	game_name="$(uci_get main game_name '')"
+	area_name="$(uci_get main area_name '')"
+	acc_mode="$(uci_get main acc_mode '')"
 	log_level="$(uci_get main log_level info)"
 	acceleration_enabled="$(uci_get main acceleration_enabled 0)"
 	openclash_mode="$(uci_get main openclash_mode exclusive)"
@@ -660,6 +681,9 @@ snapshot() {
 	json_add_string target_id "$target_id"
 	json_add_string area_id "$area_id"
 	json_add_string platform_id "$platform_id"
+	json_add_string game_name "$game_name"
+	json_add_string area_name "$area_name"
+	json_add_string acc_mode "$acc_mode"
 	json_add_string log_level "$log_level"
 	json_add_boolean acceleration_enabled "$acceleration_enabled"
 	json_add_string openclash_mode "$openclash_mode"
@@ -949,6 +973,7 @@ save_config() {
 	local target_name target_ip target_mac target_id area_id platform_id log_level openclash_mode
 	local old_scope old_selected_games old_target_ip old_target_id old_area_id old_platform_id
 	local old_openclash_mode data_plane_changed
+	local game_name area_name acc_mode old_acc_mode selection_changed
 	config_load "$CONFIG"
 	old_scope="$(uci_get main scope lan)"
 	old_selected_games="$(config_list_foreach main selected_game print_selected_game)"
@@ -956,6 +981,9 @@ save_config() {
 	old_target_id="$(uci_get main target_id '')"
 	old_area_id="$(uci_get main area_id '')"
 	old_platform_id="$(uci_get main platform_id '')"
+	old_acc_mode="$(uci_get main acc_mode '')"
+	game_name="$(uci_get main game_name '')"
+	area_name="$(uci_get main area_name '')"
 	old_openclash_mode="$(uci_get main openclash_mode exclusive)"
 	scope="$(request_value scope)"
 	requested_games="$(request_values selected_games)"
@@ -965,6 +993,7 @@ save_config() {
 	target_id="$(request_value target_id)"
 	area_id="$(request_value area_id)"
 	platform_id="$(request_value platform_id)"
+	acc_mode="$(request_value acc_mode)"
 	log_level="$(request_value log_level)"
 	openclash_mode="$(request_value openclash_mode)"
 	[ -n "$openclash_mode" ] || openclash_mode="$(uci_get main openclash_mode exclusive)"
@@ -985,12 +1014,34 @@ save_config() {
 	[ -z "$target_id" ] || decimal_value "$target_id" 20 || fail '游戏 ID 必须是数字'
 	[ -z "$area_id" ] || decimal_value "$area_id" 20 || fail '区服 ID 必须是数字'
 	[ -z "$platform_id" ] || decimal_value "$platform_id" 20 || fail '平台 ID 必须是数字'
+	case "$acc_mode" in ''|3|4|5) ;; *) fail '加速模式无效' ;; esac
 	case "$log_level" in debug|info|warn|error) ;; *) fail '日志级别无效' ;; esac
 	case "$openclash_mode" in exclusive) ;; *) fail 'OpenClash 冲突策略无效' ;; esac
+	selection_changed=0
+	if [ "$old_target_id" != "$target_id" ] || [ "$old_area_id" != "$area_id" ] ||
+		[ "$old_platform_id" != "$platform_id" ] || [ "$old_acc_mode" != "$acc_mode" ]; then
+		selection_changed=1
+	fi
+	if [ "$selection_changed" -eq 1 ] ||
+		{ [ -z "$game_name" ] && [ -n "$(request_value game_name)" ]; }; then
+		game_name=''
+		area_name=''
+		if [ -n "$target_id$area_id$platform_id$acc_mode" ]; then
+			[ -n "$target_id" ] && [ -n "$area_id" ] && [ -n "$platform_id" ] ||
+				fail '游戏、区服和平台必须一起选择'
+			run_cli pc-game-map pc-game-map "$target_id" || exit 1
+			set -- "$target_id" "$area_id" "$platform_id"
+			[ -z "$acc_mode" ] || set -- "$@" "$acc_mode"
+			run_cli pc-game-selection pc-game-selection "$@" || exit 1
+			game_name="$(jsonfilter -i "$TEMP_PREFIX.out" -e '@.game_name')"
+			area_name="$(jsonfilter -i "$TEMP_PREFIX.out" -e '@.area_name')"
+		fi
+	fi
 	data_plane_changed=0
 	if [ "$old_scope" != "$scope" ] || [ "$old_selected_games" != "$selected_games" ] ||
 		[ "$old_target_ip" != "$target_ip" ] || [ "$old_target_id" != "$target_id" ] ||
 		[ "$old_area_id" != "$area_id" ] || [ "$old_platform_id" != "$platform_id" ] ||
+		[ "$old_acc_mode" != "$acc_mode" ] ||
 		[ "$old_openclash_mode" != "$openclash_mode" ]; then
 		data_plane_changed=1
 	fi
@@ -1012,6 +1063,9 @@ save_config() {
 	uci -q set "$CONFIG.main.target_id=$target_id"
 	uci -q set "$CONFIG.main.area_id=$area_id"
 	uci -q set "$CONFIG.main.platform_id=$platform_id"
+	uci -q set "$CONFIG.main.game_name=$game_name"
+	uci -q set "$CONFIG.main.area_name=$area_name"
+	uci -q set "$CONFIG.main.acc_mode=$acc_mode"
 	uci -q set "$CONFIG.main.log_level=$log_level"
 	uci -q set "$CONFIG.main.openclash_mode=$openclash_mode"
 	uci -q commit "$CONFIG" || fail '保存配置失败'
@@ -1147,6 +1201,7 @@ handle_request() {
 	self_test) self_test ;;
 		game_list) control_game_list ;;
 		game_search) control_game_search ;;
+		game_options) control_game_options ;;
 		check_speedup) control_check_speedup ;;
 		profile_fetch) control_profile_fetch ;;
 		signal_login) control_signal_login ;;

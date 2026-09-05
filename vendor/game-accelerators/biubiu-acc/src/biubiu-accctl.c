@@ -27,7 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define BIUBIU_ACC_VERSION "0.10.1"
+#define BIUBIU_ACC_VERSION "0.11.0"
 #define LOGIN_ORIGIN "https://member-login.biubiu001.com/"
 #define ACCELERATION_HOST "gtm-main.biubiu001.com"
 #define ACCELERATION_ORIGIN "https://" ACCELERATION_HOST
@@ -4436,6 +4436,230 @@ fail:
     return -1;
 }
 
+static const char *pc_catalog_label(json_object *object, const char *key)
+{
+    json_object *value = object_member(object, key, json_type_string);
+    const char *text = value ? json_object_get_string(value) : NULL;
+    size_t index;
+    size_t length = value ? (size_t)json_object_get_string_len(value) : 0;
+
+    if (!text || !length || length > 256 || strlen(text) != length)
+        return NULL;
+    for (index = 0; index < length; index++) {
+        if ((unsigned char)text[index] < 0x20 || text[index] == 0x7f)
+            return NULL;
+    }
+    return text;
+}
+
+static bool pc_catalog_id(json_object *object, const char *key, uint64_t *id)
+{
+    json_object *value = object_member(object, key, json_type_int);
+    int64_t parsed = value ? json_object_get_int64(value) : 0;
+
+    if (parsed <= 0 || parsed > INT32_MAX)
+        return false;
+    *id = (uint64_t)parsed;
+    return true;
+}
+
+static void pc_catalog_add_id(json_object *object, const char *key, uint64_t id)
+{
+    char text[24];
+
+    snprintf(text, sizeof(text), "%" PRIu64, id);
+    json_object_object_add(object, key, json_object_new_string(text));
+}
+
+/* Only public, typed metadata crosses the LuCI boundary, never raw API data. */
+static json_object *pc_catalog_game(json_object *entry, bool with_options)
+{
+    json_object *info = object_member(entry, "gameInfo", json_type_object);
+    json_object *game = NULL;
+    const char *name = pc_catalog_label(info, "gameName");
+    uint64_t id, platform;
+    size_t group_index;
+    static const struct {
+        const char *source;
+        const char *id_key;
+        const char *name_key;
+        const char *destination;
+    } groups[] = {
+        {"areaList", "areaId", "name", "areas"},
+        {"speedupModelList", "speedupModelId", "speedupModelName", "modes"},
+    };
+
+    if (!name || !pc_catalog_id(info, "gameId", &id) ||
+        !pc_catalog_id(info, "platformId", &platform) ||
+        !pc_platform_name(platform))
+        return NULL;
+    game = json_object_new_object();
+    if (!game)
+        return NULL;
+    pc_catalog_add_id(game, "id", id);
+    pc_catalog_add_id(game, "platform_id", platform);
+    json_object_object_add(game, "name", json_object_new_string(name));
+    if (!with_options)
+        return game;
+    for (group_index = 0; group_index < sizeof(groups) / sizeof(groups[0]);
+         group_index++) {
+        json_object *source = object_member(entry, groups[group_index].source,
+                                             json_type_array);
+        json_object *options = json_object_new_array();
+        size_t index;
+
+        if (!options) {
+            json_object_put(game);
+            return NULL;
+        }
+        json_object_object_add(game, groups[group_index].destination, options);
+        for (index = 0; source && index < json_object_array_length(source) &&
+                        index < 512; index++) {
+            json_object *item = json_object_array_get_idx(source, index);
+            const char *label = pc_catalog_label(item, groups[group_index].name_key);
+            json_object *option;
+            size_t duplicate;
+
+            if (!label || !pc_catalog_id(item, groups[group_index].id_key, &id) ||
+                (group_index == 1 && !pc_acceleration_mode(id)))
+                continue;
+            for (duplicate = 0; duplicate < json_object_array_length(options);
+                 duplicate++) {
+                json_object *existing = json_object_array_get_idx(options, duplicate);
+                if (strtoull(string_member(existing, "id"), NULL, 10) == id)
+                    break;
+            }
+            if (duplicate != json_object_array_length(options))
+                continue;
+            option = json_object_new_object();
+            if (!option) {
+                json_object_put(game);
+                return NULL;
+            }
+            pc_catalog_add_id(option, "id", id);
+            json_object_object_add(option, "name", json_object_new_string(label));
+            json_object_array_add(options, option);
+        }
+    }
+    return game;
+}
+
+static json_object *pc_catalog_summary(json_object *response, uint64_t game_id)
+{
+    json_object *data = object_member(response, "data", json_type_object);
+    json_object *list = object_member(data, "list", json_type_array);
+    json_object *summary = NULL;
+    json_object *games;
+    json_object *game;
+    size_t index;
+
+    if (!acceleration_response_success(response) || !list ||
+        json_object_array_length(list) > 10000)
+        return NULL;
+    summary = json_object_new_object();
+    if (!summary)
+        return NULL;
+    json_object_object_add(summary, "success", json_object_new_boolean(true));
+    if (game_id) {
+        game = pc_catalog_game(pc_game_map_entry(response, game_id), true);
+        if (!game) {
+            json_object_put(summary);
+            return NULL;
+        }
+        json_object_object_add(summary, "game", game);
+        return summary;
+    }
+    games = json_object_new_array();
+    if (!games) {
+        json_object_put(summary);
+        return NULL;
+    }
+    json_object_object_add(summary, "games", games);
+    json_object_object_add(summary, "has_next_page", json_object_new_boolean(
+        json_object_get_boolean(object_member(data, "hasNextPage", json_type_boolean))));
+    for (index = 0; index < json_object_array_length(list); index++) {
+        game = pc_catalog_game(json_object_array_get_idx(list, index), false);
+        if (game)
+            json_object_array_add(games, game);
+    }
+    return summary;
+}
+
+static int run_pc_catalog_view(int argument_count, char **arguments, bool options)
+{
+    json_object *response = NULL;
+    json_object *summary = NULL;
+    uint64_t game_id = 0;
+    int status = 1;
+
+    if (argument_count != (options ? 1 : 0) ||
+        (options && parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0)) {
+        fputs("pc-game-catalog takes no arguments; pc-game-options takes GAME_ID\n", stderr);
+        return 2;
+    }
+    if (load_private_json(options ? DEFAULT_PC_GAME_MAP_FILE : DEFAULT_PC_GAME_LIST_FILE,
+                          &response) != 0 ||
+        !(summary = pc_catalog_summary(response, game_id))) {
+        fputs("cached game metadata is missing or invalid; refresh the game catalog\n", stderr);
+        goto out;
+    }
+    puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+    status = 0;
+out:
+    json_object_put(summary);
+    cleanse_json_value(response);
+    json_object_put(response);
+    return status;
+}
+
+static int run_pc_game_selection(int argument_count, char **arguments)
+{
+    json_object *response = NULL, *summary = NULL, *mode_list = NULL, *game, *areas;
+    uint64_t game_id, area_id, platform_id, requested_mode = 0, selected_mode;
+    const char *area_name = NULL;
+    size_t index;
+    int status = 1;
+
+    if (argument_count < 3 || argument_count > 4 ||
+        parse_unsigned_argument(arguments[0], INT32_MAX, &game_id) != 0 ||
+        parse_unsigned_argument(arguments[1], INT32_MAX, &area_id) != 0 ||
+        parse_unsigned_argument(arguments[2], 10, &platform_id) != 0 ||
+        (argument_count == 4 && parse_unsigned_argument(arguments[3], 5, &requested_mode) != 0)) {
+        fputs("pc-game-selection accepts GAME_ID AREA_ID PLATFORM_ID [ACC_MODE]\n", stderr);
+        return 2;
+    }
+    if (load_private_json(DEFAULT_PC_GAME_MAP_FILE, &response) != 0 ||
+        !(summary = pc_catalog_summary(response, game_id)) ||
+        pc_game_start_selection(response, game_id, area_id, platform_id,
+                                 argument_count == 4, requested_mode,
+                                 &mode_list, &selected_mode) != 0)
+        goto out;
+    game = object_member(summary, "game", json_type_object);
+    areas = object_member(game, "areas", json_type_array);
+    for (index = 0; index < json_object_array_length(areas); index++) {
+        json_object *area = json_object_array_get_idx(areas, index);
+        if (strtoull(string_member(area, "id"), NULL, 10) == area_id) {
+            area_name = string_member(area, "name");
+            break;
+        }
+    }
+    if (!area_name)
+        goto out;
+    json_object_object_add(summary, "game_name", json_object_new_string(string_member(game, "name")));
+    json_object_object_add(summary, "area_name", json_object_new_string(area_name));
+    pc_catalog_add_id(summary, "effective_acc_mode", selected_mode);
+    puts(json_object_to_json_string_ext(summary, JSON_C_TO_STRING_PLAIN));
+    status = 0;
+out:
+    if (status)
+        fputs("game, area, platform or mode is not in the current provider catalog\n", stderr);
+    json_object_put(mode_list);
+    json_object_put(summary);
+    cleanse_json_value(response);
+    json_object_put(response);
+    return status;
+}
+
 static int run_pc_context_start(int argument_count, char **arguments)
 {
     json_object *map_response = NULL;
@@ -7778,6 +8002,11 @@ static void usage(FILE *stream)
             "                    Fetch launch-platform metadata\n"
             "  pc-game-map GAME_ID\n"
             "                    Fetch exact area, platform, and mode metadata\n"
+            "  pc-game-catalog   Print public fields from cached search results\n"
+            "  pc-game-options GAME_ID\n"
+            "                    Print public game, area, and mode options\n"
+            "  pc-game-selection GAME_ID AREA_ID PLATFORM_ID [ACC_MODE]\n"
+            "                    Validate a selection against the cached map\n"
             "  pc-user-sync     Resolve the accelerator account identity\n"
             "  pc-context-start GAME_ID AREA_ID PLATFORM_ID [ACC_MODE]\n"
             "                    Begin one reusable acceleration session\n"
@@ -7876,6 +8105,12 @@ int main(int argc, char **argv)
         return run_pc_runtime_prepare(argument_count, arguments);
     if (strcmp(command, "pc-context-start") == 0)
         return run_pc_context_start(argument_count, arguments);
+    if (strcmp(command, "pc-game-catalog") == 0)
+        return run_pc_catalog_view(argument_count, arguments, false);
+    if (strcmp(command, "pc-game-options") == 0)
+        return run_pc_catalog_view(argument_count, arguments, true);
+    if (strcmp(command, "pc-game-selection") == 0)
+        return run_pc_game_selection(argument_count, arguments);
     if (strcmp(command, "acc-key-fetch") == 0 && argument_count == 0)
         return fetch_acceleration_key(acceleration_key_file);
 

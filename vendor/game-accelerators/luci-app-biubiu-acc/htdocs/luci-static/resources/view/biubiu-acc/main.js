@@ -30,6 +30,8 @@ let catalog = { profiles: [] };
 let matchStatus = { available: false, flows: [] };
 let devices = [];
 let logText = '';
+let requestQueue = Promise.resolve();
+let officialPicker = null;
 
 function commandError(res, fallback) {
 	return new Error((res && (res.stderr || res.stdout) || fallback || _('操作失败')).trim());
@@ -131,12 +133,21 @@ function refreshView() {
 
 function runRequest(payload, options) {
 	options = options || {};
-	return fs.write(REQUEST_FILE, JSON.stringify(payload), 384).then(function() {
-		return fs.exec(COMMAND, [ 'request' ]);
-	}).then(function(res) {
-		const result = parseJSONCommand(res, _('后端操作失败'));
-		if (result.success === false)
-			throw new Error(result.message || _('后端操作失败'));
+	const execute = function() {
+		return fs.write(REQUEST_FILE, JSON.stringify(payload), 384).then(function() {
+			return fs.exec(COMMAND, [ 'request' ]);
+		}).then(function(res) {
+			const result = parseJSONCommand(res, _('后端操作失败'));
+			if (result.success === false)
+				throw new Error(result.message || _('后端操作失败'));
+			return result;
+		});
+	};
+
+	/* Every manager request shares one request.json; only the write/execute pair is serialized. */
+	const queued = requestQueue.then(execute, execute);
+	requestQueue = queued.catch(function() {});
+	return queued.then(function(result) {
 		if (options.notify !== false)
 			ui.addNotification(null, E('p', {}, result.message || _('操作完成')), 'info');
 		return options.refresh === false ? result : refreshView().then(function() { return result; });
@@ -155,6 +166,9 @@ function saveConfig(changes) {
 		target_id: current.target_id || '',
 		area_id: current.area_id || '',
 		platform_id: current.platform_id || '',
+		game_name: current.game_name || '',
+		area_name: current.area_name || '',
+		acc_mode: current.acc_mode || '',
 		log_level: current.log_level || 'info',
 		openclash_mode: current.openclash_mode || 'exclusive'
 	};
@@ -407,6 +421,288 @@ function showGameModal() {
 	]);
 }
 
+function normalizeOfficialGame(item) {
+	const id = String(item && item.id || '').trim();
+	const name = String(item && item.name || '').trim();
+	const platformId = String(item && item.platform_id || '').trim();
+	if (!positiveId(id) || !name || !positiveId(platformId))
+		return null;
+	return { id: id, name: name, platform_id: platformId };
+}
+
+function normalizeOfficialGames(result) {
+	const games = Array.isArray(result && result.games) ? result.games : [];
+	return {
+		games: games.map(normalizeOfficialGame).filter(function(game) { return !!game; }),
+		has_next_page: !!(result && result.has_next_page)
+	};
+}
+
+function normalizeOfficialOptions(result) {
+	const source = result && result.game || {};
+	const game = normalizeOfficialGame(source);
+	if (!game)
+		return null;
+	const areas = Array.isArray(source.areas) ? source.areas.map(function(area) {
+		const id = String(area && area.id || '').trim();
+		const name = String(area && area.name || '').trim();
+		return positiveId(id) && name ? { id: id, name: name } : null;
+	}).filter(function(area) { return !!area; }) : [];
+	const modes = Array.isArray(source.modes) ? source.modes.map(function(mode) {
+		const id = String(mode && mode.id || '').trim();
+		const name = String(mode && mode.name || '').trim();
+		return (id === '3' || id === '4' || id === '5') && name ? { id: id, name: name } : null;
+	}).filter(function(mode) { return !!mode; }) : [];
+	game.areas = areas;
+	game.modes = modes;
+	return game;
+}
+
+function pickerIsActive(state) {
+	return officialPicker === state && !state.closed && document.body.contains(state.root);
+}
+
+function closeOfficialPicker(state) {
+	state.closed = true;
+	state.searchVersion++;
+	state.optionsVersion++;
+	if (officialPicker === state) {
+		officialPicker = null;
+		if (document.body.contains(state.root))
+			ui.hideModal();
+	}
+}
+
+function renderOfficialPicker(state) {
+	if (!pickerIsActive(state))
+		return;
+
+	const cancel = button(_('取消'), 'cbi-button-neutral', function() {
+		closeOfficialPicker(state);
+	}, state.saving);
+	let content;
+	let actions = [ cancel ];
+
+	if (state.stage === 'results') {
+		const keyword = input('search', state.keyword, _('搜索官方游戏'));
+		keyword.setAttribute('autocomplete', 'off');
+		keyword.onkeydown = function(ev) {
+			if (ev.key === 'Enter') {
+				ev.preventDefault();
+				searchOfficialGames(state, keyword.value, 1);
+			}
+		};
+		const searchButton = button(_('搜索'), 'cbi-button-neutral', function() {
+			searchOfficialGames(state, keyword.value, 1);
+		}, state.gamesLoading);
+		let resultContent;
+		if (state.gamesLoading) {
+			resultContent = E('div', { 'class': 'bba-empty' }, _('正在读取官方游戏目录…'));
+		} else if (state.gamesError) {
+			resultContent = E('div', { 'class': 'bba-picker-error' }, [
+				E('div', { 'class': 'bba-callout' }, state.gamesError),
+				button(_('重试'), 'cbi-button-neutral', function() {
+					searchOfficialGames(state, state.keyword, state.page);
+				})
+			]);
+		} else if (!state.games.length) {
+			resultContent = E('div', { 'class': 'bba-empty' }, _('没有找到官方游戏'));
+		} else {
+			resultContent = E('div', { 'class': 'bba-provider-game-list' }, state.games.map(function(game) {
+				return E('button', {
+					type: 'button',
+					'class': 'cbi-button cbi-button-neutral bba-provider-game',
+					click: function() { loadOfficialOptions(state, game); }
+				}, [
+					E('strong', {}, game.name),
+					E('small', {}, _('平台 ID: ') + game.platform_id)
+				]);
+			}));
+		}
+		content = E('div', { 'class': 'bba-provider-picker' }, [
+			E('div', { 'class': 'bba-provider-search' }, [ keyword, searchButton ]),
+			resultContent,
+			E('div', { 'class': 'bba-picker-pagination' }, [
+				button(_('上一页'), 'cbi-button-neutral', function() {
+					searchOfficialGames(state, state.keyword, state.page - 1);
+				}, state.gamesLoading || state.page <= 1),
+				E('span', { 'class': 'bba-muted' }, _('第 ') + state.page + _(' 页')),
+				button(_('下一页'), 'cbi-button-neutral', function() {
+					searchOfficialGames(state, state.keyword, state.page + 1);
+				}, state.gamesLoading || !state.hasNextPage)
+			])
+		]);
+	} else {
+		const back = button(_('返回游戏列表'), 'cbi-button-neutral', function() {
+			state.optionsVersion++;
+			state.stage = 'results';
+			state.optionsLoading = false;
+			state.optionsError = '';
+			renderOfficialPicker(state);
+		}, state.saving);
+		if (state.optionsLoading) {
+			content = E('div', { 'class': 'bba-empty' }, _('正在读取区服和模式…'));
+		} else if (state.optionsError) {
+			content = E('div', { 'class': 'bba-picker-error' }, [
+				E('div', { 'class': 'bba-callout' }, state.optionsError),
+				button(_('重试'), 'cbi-button-neutral', function() {
+					loadOfficialOptions(state, state.selectedGame);
+				})
+			]);
+		} else if (!state.options || !state.options.areas.length) {
+			content = E('div', { 'class': 'bba-empty' }, _('该游戏没有可选区服'));
+		} else {
+			const game = state.options;
+			const area = select(game.areas.map(function(item) { return [ item.id, item.name ]; }), state.areaId || game.areas[0].id);
+			const mode = select([ [ '', _('自动（遵循服务端默认）') ] ].concat(game.modes.map(function(item) {
+				return [ item.id, item.name ];
+			})), state.modeId);
+			area.onchange = function() { state.areaId = area.value; };
+			mode.onchange = function() { state.modeId = mode.value; };
+			content = E('div', { 'class': 'bba-provider-picker' }, [
+				E('div', { 'class': 'bba-picker-selected' }, E('strong', {}, game.name)),
+				fieldRows([
+					[ _('区服'), area ],
+					[ _('加速模式'), E('div', {}, [
+						mode,
+						E('div', { 'class': 'bba-muted bba-mode-note' }, _('进程模式仅为服务端模式，路由器不会识别本地进程。'))
+					]) ]
+				])
+			]);
+			actions.unshift(button(_('保存加速选择'), 'cbi-button-positive', function(ev) {
+				state.areaId = area.value;
+				state.modeId = mode.value;
+				state.saving = true;
+				renderOfficialPicker(state);
+				return withBusy(ev, function() {
+					const selectedArea = game.areas.filter(function(item) { return item.id === area.value; })[0];
+					const selectedMode = mode.value;
+					if (!selectedArea)
+						throw new Error(_('请选择区服'));
+					if (selectedMode && !game.modes.some(function(item) { return item.id === selectedMode; }))
+						throw new Error(_('请选择有效的加速模式'));
+					return saveConfig({
+						target_id: game.id,
+						platform_id: game.platform_id,
+						game_name: game.name,
+						area_id: selectedArea.id,
+						area_name: selectedArea.name,
+						acc_mode: selectedMode
+					}).then(function() { closeOfficialPicker(state); });
+				}).finally(function() {
+					if (pickerIsActive(state)) {
+						state.saving = false;
+						renderOfficialPicker(state);
+					}
+				});
+			}, state.saving));
+		}
+		content = E('div', {}, [ back, content ]);
+	}
+
+	dom.content(state.root, [ content, modalActions(actions) ]);
+}
+
+function searchOfficialGames(state, keyword, page) {
+	if (!pickerIsActive(state))
+		return Promise.resolve();
+	const version = ++state.searchVersion;
+	state.keyword = String(keyword || '').trim();
+	state.page = Math.max(1, Number(page) || 1);
+	state.gamesLoading = true;
+	state.gamesError = '';
+	renderOfficialPicker(state);
+	const request = state.keyword
+		? { operation: 'game_search', keyword: state.keyword, page: state.page, size: 12 }
+		: { operation: 'game_list' };
+	return runRequest(request, { refresh: false, notify: false }).then(function(result) {
+		if (!pickerIsActive(state) || state.searchVersion !== version)
+			return;
+		const normalized = normalizeOfficialGames(result);
+		state.games = normalized.games;
+		state.hasNextPage = normalized.has_next_page;
+		state.gamesLoading = false;
+		renderOfficialPicker(state);
+	}).catch(function(err) {
+		if (!pickerIsActive(state) || state.searchVersion !== version)
+			return;
+		state.gamesLoading = false;
+		state.gamesError = err && err.message || String(err);
+		renderOfficialPicker(state);
+	});
+}
+
+function loadOfficialOptions(state, listedGame) {
+	if (!pickerIsActive(state) || !listedGame)
+		return Promise.resolve();
+	const version = ++state.optionsVersion;
+	const sameGame = state.selectedGame && state.selectedGame.id === listedGame.id;
+	state.stage = 'options';
+	state.selectedGame = listedGame;
+	if (!sameGame) {
+		state.areaId = listedGame.id === state.savedTargetId ? state.savedAreaId : '';
+		state.modeId = listedGame.id === state.savedTargetId ? state.savedModeId : '';
+	}
+	state.options = null;
+	state.optionsLoading = true;
+	state.optionsError = '';
+	renderOfficialPicker(state);
+	return runRequest({ operation: 'game_options', game_id: listedGame.id }, {
+		refresh: false, notify: false
+	}).then(function(result) {
+		if (!pickerIsActive(state) || state.optionsVersion !== version)
+			return;
+		const game = normalizeOfficialOptions(result);
+		if (!game || game.id !== listedGame.id)
+			throw new Error(_('后端返回的游戏选项无效'));
+		state.options = game;
+		if (!game.areas.some(function(item) { return item.id === state.areaId; }))
+			state.areaId = game.areas.length ? game.areas[0].id : '';
+		if (state.modeId && !game.modes.some(function(item) { return item.id === state.modeId; }))
+			state.modeId = '';
+		state.optionsLoading = false;
+		renderOfficialPicker(state);
+	}).catch(function(err) {
+		if (!pickerIsActive(state) || state.optionsVersion !== version)
+			return;
+		state.optionsLoading = false;
+		state.optionsError = err && err.message || String(err);
+		renderOfficialPicker(state);
+	});
+}
+
+function showOfficialGameModal() {
+	if (officialPicker)
+		officialPicker.closed = true;
+	const config = snapshot.config || {};
+	const state = {
+		root: E('div', { 'class': 'bba-official-modal' }),
+		closed: false,
+		stage: 'results',
+		keyword: '',
+		page: 1,
+		games: [],
+		hasNextPage: false,
+		gamesLoading: true,
+		gamesError: '',
+		selectedGame: null,
+		options: null,
+		optionsLoading: false,
+		optionsError: '',
+		areaId: '',
+		modeId: '',
+		savedTargetId: String(config.target_id || ''),
+		savedAreaId: String(config.area_id || ''),
+		savedModeId: String(config.acc_mode || ''),
+		saving: false,
+		searchVersion: 0,
+		optionsVersion: 0
+	};
+	officialPicker = state;
+	ui.showModal(_('选择官方加速游戏'), [ state.root ]);
+	searchOfficialGames(state, '', 1);
+}
+
 function showProfileModal() {
 	const config = snapshot.config || {};
 	const game = input('text', config.target_id || '', _('游戏 ID'));
@@ -433,11 +729,22 @@ function showProfileModal() {
 			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
 			button(_('保存'), 'cbi-button-positive', function(ev) {
 				return withBusy(ev, function() {
-					return saveConfig({
-						target_id: game.value.trim(), area_id: area.value.trim(),
-						platform_id: platform.value.trim(), log_level: logLevel.value,
-						openclash_mode: openclashMode.value
-					}).then(ui.hideModal);
+					const targetId = game.value.trim();
+					const areaId = area.value.trim();
+					const platformId = platform.value.trim();
+					const idsChanged = targetId !== String(config.target_id || '') ||
+						areaId !== String(config.area_id || '') ||
+						platformId !== String(config.platform_id || '');
+					const changes = {
+						target_id: targetId, area_id: areaId, platform_id: platformId,
+						log_level: logLevel.value, openclash_mode: openclashMode.value
+					};
+					if (idsChanged) {
+						changes.game_name = '';
+						changes.area_name = '';
+						changes.acc_mode = '';
+					}
+					return saveConfig(changes).then(ui.hideModal);
 				});
 			})
 		])
@@ -559,6 +866,19 @@ function controlButton(label, operation, disabled) {
 	}, disabled);
 }
 
+function accelerationModeName(value) {
+	switch (String(value || '')) {
+	case '3': return _('进程模式');
+	case '4': return _('模式 4');
+	case '5': return _('路由模式');
+	default: return _('自动（遵循服务端默认）');
+	}
+}
+
+function savedOfficialLabel(name, id) {
+	return name || (id ? _('ID: ') + id : _('未选择'));
+}
+
 function renderAcceleration() {
 	const config = snapshot.config || {};
 	const session = snapshot.session || {};
@@ -590,16 +910,14 @@ function renderAcceleration() {
 	const hasLocalHint = selectedIds.some(function(id) {
 		return id === 'steam' || id === 'counter-strike-2';
 	});
-	const hasBuiltinPcProfile = selectedIds.indexOf('counter-strike-2') !== -1;
 	const hasProviderHint = !!dataPlane.provider_rules_available || !!matchStatus.provider_rules_available;
 	const hasProviderDomainHint = !!dataPlane.provider_domain_rules_available || !!matchStatus.provider_domain_rules_available;
 	const hasRouteHint = hasLocalHint || hasProviderHint;
-	const idsReady = hasBuiltinPcProfile ||
-		(positiveId(config.target_id) && positiveId(config.area_id) &&
-		positiveId(config.platform_id));
-	const effectiveGameId = config.target_id || (hasBuiltinPcProfile ? '38780（自动）' : '-');
-	const effectiveAreaId = config.area_id || (hasBuiltinPcProfile ? '146（自动）' : '-');
-	const effectivePlatformId = config.platform_id || (hasBuiltinPcProfile ? '6 / PC（自动）' : '-');
+	const idsReady = positiveId(config.target_id) && positiveId(config.area_id) &&
+		positiveId(config.platform_id);
+	const effectiveGameId = config.target_id || '-';
+	const effectiveAreaId = config.area_id || '-';
+	const effectivePlatformId = config.platform_id || '-';
 	const profileReady = !!dataPlane.profile_cached;
 	const authorizationReady = !!dataPlane.authorization_cached;
 	const runtimeReady = !!dataPlane.runtime_cached;
@@ -615,7 +933,7 @@ function renderAcceleration() {
 			return withBusy(ev, function() {
 				return runRequest({ operation: 'acceleration_action', action: 'start' });
 			});
-		}, !snapshot.data_plane_ready || !hasRouteHint);
+		}, !snapshot.data_plane_ready || !hasRouteHint || !idsReady);
 	return E('div', {}, [
 		E('div', { 'class': calloutClass }, snapshot.phase_message || _('等待配置')),
 		section(_('加速范围'), [], E('div', { 'class': 'bba-scope-row' }, [
@@ -624,9 +942,19 @@ function renderAcceleration() {
 				? (config.target_name || config.target_ip || _('尚未选择设备'))
 				: _('整个局域网'))
 		])),
-		section(_('内置游戏'), [ button(_('选择游戏'), 'cbi-button-add', showGameModal) ], selectedRows.length
-			? table([ _('名称'), _('类型'), _('匹配来源'), _('状态') ], selectedRows)
-			: E('div', { 'class': 'bba-empty' }, _('尚未选择游戏'))),
+		section(_('官方加速游戏'), [ button(_('选择官方游戏'), 'cbi-button-add', showOfficialGameModal) ],
+			E('dl', { 'class': 'bba-selection-summary' }, [
+				E('dt', {}, _('游戏')), E('dd', {}, savedOfficialLabel(config.game_name, config.target_id)),
+				E('dt', {}, _('区服')), E('dd', {}, savedOfficialLabel(config.area_name, config.area_id)),
+				E('dt', {}, _('加速模式')), E('dd', {}, accelerationModeName(config.acc_mode)),
+				E('dt', {}, _('节点')), E('dd', {}, _('自动分配'))
+			])),
+		section(_('内置 LAN 匹配'), [ button(_('选择游戏'), 'cbi-button-add', showGameModal) ], E('div', {}, [
+			E('div', { 'class': 'bba-muted bba-section-note' }, _('仅用于局域网流量匹配，不替代官方加速游戏选择。')),
+			selectedRows.length
+				? table([ _('名称'), _('类型'), _('匹配来源'), _('状态') ], selectedRows)
+				: E('div', { 'class': 'bba-empty' }, _('尚未选择内置匹配规则'))
+		])),
 		renderMatchStatus(),
 		section(_('高级参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
 			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, effectiveGameId) ]),
@@ -636,13 +964,13 @@ function renderAcceleration() {
 			E('tr', {}, [ E('td', {}, _('OpenClash 冲突策略')), E('td', {}, config.openclash_mode || 'exclusive') ])
 		])),
 		section(_('服务端控制'), [
-			controlButton(_('刷新游戏目录'), 'game_list', !session.authenticated || !key.cached),
+			controlButton(_('刷新官方目录'), 'game_list', !session.authenticated || !key.cached),
 			controlButton(_('检查权益'), 'check_speedup', !session.authenticated || !key.cached || !idsReady),
 			controlButton(_('获取节点并授权'), 'profile_fetch', !session.authenticated || !key.cached || !idsReady),
 			controlButton(_('登录数据通道'), 'signal_login', !session.authenticated || !key.cached || !profileReady || !idsReady),
 			controlButton(_('续期数据通道'), 'channel_renew', !session.authenticated || !key.cached || !profileReady || !authorizationReady || !idsReady),
 			controlButton(_('生成运行时配置'), 'runtime_prepare', !profileReady || !authorizationReady)
-		], E('div', { 'class': 'bba-callout bba-callout-info' }, _('控制 API 会把授权后的节点和通道凭据保存在路由器 root 私有目录；不会在页面或日志中显示令牌。'))),
+		], E('div', { 'class': 'bba-callout bba-callout-info' }, _('节点由服务端自动分配。'))),
 		section(_('数据通道'), [
 			actionButton
 		], table([ _('状态'), _('结果') ], [
