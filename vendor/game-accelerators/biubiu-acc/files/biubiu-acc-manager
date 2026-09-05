@@ -11,7 +11,7 @@ CATALOG_FILE='/usr/share/biubiu-acc/game-catalog.json'
 CONNTRACK_FILE='/proc/net/nf_conntrack'
 RUNTIME_ROOT='/tmp/biubiu-acc'
 REQUEST_FILE="$RUNTIME_ROOT/request.json"
-LOCK_DIR="$RUNTIME_ROOT/request.lock"
+LOCK_DIR="$RUNTIME_ROOT/control.lock"
 STATE_FILE="$RUNTIME_ROOT/status.json"
 LOG_ROOT='/var/log/biubiu-acc'
 LOG_FILE="$LOG_ROOT/manager.log"
@@ -112,6 +112,33 @@ valid_mac() {
 	[ -z "$1" ] || printf '%s' "$1" | grep -Eqi '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
 }
 
+provider_domain_rules_from_nft() {
+	local protocol="$1" domains rule ports domain_index set_name ips ip rules=''
+	domains="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e "@.${protocol}Domains[*]" 2>/dev/null)"
+	[ -n "$domains" ] || return 0
+	domain_index=0
+	for rule in $domains; do
+		case "$rule" in
+			*'|'*)
+				ports="${rule#*|}"
+				case "$ports" in ''|*[!0-9,*-]*) continue ;; esac
+				domain_index=$((domain_index + 1))
+				[ "$domain_index" -le 128 ] || break
+				set_name="provider_domain_${protocol}_${domain_index}"
+				ips="$(nft list set inet biubiu_acc "$set_name" 2>/dev/null |
+					awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+(\.[0-9]+){3}$/) print $i }' |
+					awk '!seen[$0]++')"
+				for ip in $ips; do
+					rules="${rules}${rules:+
+}${ip}/32|${ports}"
+				done
+				;;
+			*) continue ;;
+		esac
+	done
+	printf '%s\n' "$rules"
+}
+
 valid_game_slug() {
 	local value="$1" length
 	case "$value" in ''|-*|*-|*[!a-z0-9-]*) return 1 ;; esac
@@ -199,6 +226,61 @@ private_json_ready() {
 	[ "$owner" = 0 ] && [ "$mode" = 600 ]
 }
 
+runtime_expiry() {
+	local path="$1" value expression minimum=0
+	[ -f "$path" ] && [ ! -L "$path" ] || {
+		printf '0\n'
+		return 0
+	}
+	for expression in '@.channels[*].expiresAt' '@.outbounds[*].channels[*].expiresAt'; do
+		for value in $(jsonfilter -i "$path" -e "$expression" 2>/dev/null); do
+			case "$value" in ''|*[!0-9]*) continue ;; esac
+			if [ "$value" -gt 100000000000 ] 2>/dev/null; then
+				value=$((value / 1000))
+			fi
+			[ "$value" -gt 0 ] 2>/dev/null && [ "$value" -le 4102444800 ] 2>/dev/null || continue
+			if [ "$minimum" -eq 0 ] || [ "$value" -lt "$minimum" ]; then
+				minimum="$value"
+			fi
+		done
+	done
+	printf '%s\n' "$minimum"
+}
+
+runtime_is_expired() {
+	local path="$1" expiry now
+	expiry="$(runtime_expiry "$path")"
+	case "$expiry" in ''|*[!0-9]*|0) return 1 ;; esac
+	now="$(date +%s 2>/dev/null || printf '0')"
+	case "$now" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$expiry" -le "$now" ] 2>/dev/null
+}
+
+runtime_json_ready() {
+	local path="$1" schema signal_session_id
+	private_json_ready "$path" || return 1
+	schema="$(jsonfilter -i "$path" -e '@.schemaVersion' 2>/dev/null | head -n 1)"
+	case "$schema" in 1|2) ;; *) return 1 ;; esac
+	signal_session_id="$(jsonfilter -i "$path" -e '@.signalSessionId' 2>/dev/null | head -n 1)"
+	[ -n "$signal_session_id" ] || return 1
+	! printf '%s' "$signal_session_id" | grep -q '[[:cntrl:]]' || return 1
+	runtime_is_expired "$path" && return 1
+	return 0
+}
+
+invalidate_data_plane() {
+	# Profile, channel authorization, and runtime are one consistency unit.
+	# Never leave an older channel usable after account or game parameters change.
+	[ -x "$TRAFFIC" ] && "$TRAFFIC" stop >/dev/null 2>&1 || true
+	uci -q set "$CONFIG.main.acceleration_enabled=0"
+	uci -q commit "$CONFIG" >/dev/null 2>&1 || true
+	rm -f /etc/biubiu-acc/authorization.json \
+		/etc/biubiu-acc/channel-ticket.json \
+		/etc/biubiu-acc/pc-authorization.json \
+		/etc/biubiu-acc/pc-channel-ticket.json \
+		/etc/biubiu-acc/runtime.json
+}
+
 traffic_field() {
 	jsonfilter -s "$1" -e "@.$2" 2>/dev/null | head -n 1
 }
@@ -207,23 +289,26 @@ load_control_ids() {
 	CONTROL_GAME_ID="$(uci_get main target_id '')"
 	CONTROL_AREA_ID="$(uci_get main area_id '')"
 	CONTROL_PLATFORM_ID="$(uci_get main platform_id '')"
+	if [ -z "$CONTROL_GAME_ID" ] || [ -z "$CONTROL_AREA_ID" ] ||
+		[ -z "$CONTROL_PLATFORM_ID" ]; then
+		config_load "$CONFIG"
+		if config_list_foreach main selected_game print_selected_game |
+			grep -qx 'counter-strike-2'; then
+			CONTROL_GAME_ID=38780
+			CONTROL_AREA_ID=146
+			CONTROL_PLATFORM_ID=6
+		fi
+	fi
 	decimal_value "$CONTROL_GAME_ID" 20 || fail '请先在高级参数中填写有效的游戏 ID'
 	decimal_value "$CONTROL_AREA_ID" 20 || fail '请先在高级参数中填写有效的区服 ID'
 	decimal_value "$CONTROL_PLATFORM_ID" 20 || fail '请先在高级参数中填写有效的平台 ID'
-	[ "$CONTROL_PLATFORM_ID" -ge 2 ] 2>/dev/null &&
+	[ "$CONTROL_PLATFORM_ID" -ge 1 ] 2>/dev/null &&
 		[ "$CONTROL_PLATFORM_ID" -le 10 ] 2>/dev/null ||
-		fail '平台 ID 必须在 2 到 10 之间'
+		fail '平台 ID 必须在 1 到 10 之间'
 }
 
 control_game_list() {
-	local page size
-	page="$(request_value page)"
-	size="$(request_value size)"
-	[ -n "$page" ] || page=1
-	[ -n "$size" ] || size=50
-	decimal_value "$page" 6 || fail '游戏目录页码无效'
-	decimal_value "$size" 4 || fail '游戏目录数量无效'
-	run_cli game-list game-list "$page" "$size" || exit 1
+	run_cli pc-game-list pc-game-list || exit 1
 	log_event info control 'Game catalog refreshed from provider'
 	emit_message '在线游戏目录已刷新'
 }
@@ -245,7 +330,12 @@ control_game_search() {
 
 control_check_speedup() {
 	load_control_ids
-	run_cli check-speedup check-speedup "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" 0 || exit 1
+	run_cli pc-user-sync pc-user-sync || exit 1
+	run_cli pc-game-map pc-game-map "$CONTROL_GAME_ID" || exit 1
+	run_cli pc-context-start pc-context-start "$CONTROL_GAME_ID" \
+		"$CONTROL_AREA_ID" "$CONTROL_PLATFORM_ID" || exit 1
+	run_cli pc-check-speedup pc-check-speedup "$CONTROL_GAME_ID" \
+		"$CONTROL_AREA_ID" || exit 1
 	log_event info control 'Speedup entitlement checked'
 	emit_message '已检查加速权益'
 }
@@ -254,42 +344,71 @@ control_profile_fetch() {
 	load_control_ids
 	# The profile endpoint is only queried after the entitlement check so an
 	# expired or unauthorized account cannot leave a misleading runtime state.
-	run_cli check-speedup check-speedup "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" 0 || exit 1
-	run_cli profile-fetch profile-fetch "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
+	run_cli pc-user-sync pc-user-sync || exit 1
+	run_cli pc-game-map pc-game-map "$CONTROL_GAME_ID" || exit 1
+	run_cli pc-context-start pc-context-start "$CONTROL_GAME_ID" \
+		"$CONTROL_AREA_ID" "$CONTROL_PLATFORM_ID" || exit 1
+	run_cli pc-check-speedup pc-check-speedup "$CONTROL_GAME_ID" \
+		"$CONTROL_AREA_ID" || exit 1
+	run_cli pc-profile-fetch pc-profile-fetch "$CONTROL_GAME_ID" \
+		"$CONTROL_AREA_ID" || exit 1
+	invalidate_data_plane
+	run_cli pc-signal-login pc-signal-login "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
 		"$CONTROL_PLATFORM_ID" || exit 1
-	run_cli runtime-prepare runtime-prepare || exit 1
-	log_event info control 'Acceleration profile and runtime refreshed'
-	emit_message '节点配置已获取，运行时通道已准备'
+	run_cli pc-runtime-prepare pc-runtime-prepare || exit 1
+	log_event info control 'Profile, channel authorization, and runtime refreshed'
+	emit_message '节点配置已获取，数据通道已授权，运行时配置已准备'
 }
 
 control_signal_login() {
 	load_control_ids
-	private_json_ready /etc/biubiu-acc/profile.json ||
+	private_json_ready /etc/biubiu-acc/pc-profile.json ||
 		fail '请先获取节点配置'
-	run_cli signal-login signal-login "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
+	private_json_ready /etc/biubiu-acc/pc-context.json ||
+		fail '加速上下文不存在，请重新获取节点配置'
+	invalidate_data_plane
+	run_cli pc-signal-login pc-signal-login "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
 		"$CONTROL_PLATFORM_ID" || exit 1
-	run_cli runtime-prepare runtime-prepare || exit 1
+	run_cli pc-runtime-prepare pc-runtime-prepare || exit 1
 	log_event info control 'Data channel authorization completed'
 	emit_message '数据通道授权成功，运行时配置已更新'
 }
 
 control_channel_renew() {
 	load_control_ids
-	private_json_ready /etc/biubiu-acc/profile.json ||
+	private_json_ready /etc/biubiu-acc/pc-profile.json ||
 		fail '请先获取节点配置'
-	private_json_ready /etc/biubiu-acc/authorization.json ||
+	private_json_ready /etc/biubiu-acc/pc-authorization.json ||
 		fail '请先登录数据通道'
-	run_cli channel-renew channel-renew "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
+	run_cli pc-channel-renew pc-channel-renew "$CONTROL_GAME_ID" "$CONTROL_AREA_ID" \
 		"$CONTROL_PLATFORM_ID" || exit 1
-	run_cli runtime-prepare runtime-prepare || exit 1
+	run_cli pc-runtime-prepare pc-runtime-prepare || exit 1
+	reload_data_plane_if_enabled || exit 1
 	log_event info control 'Data channel tickets renewed'
 	emit_message '数据通道已续期，运行时配置已更新'
 }
 
+reload_data_plane_if_enabled() {
+	local error message
+	[ "$(bool_value "$(uci_get main acceleration_enabled 0)")" -eq 1 ] || return 0
+	error="$TEMP_PREFIX.reload.err"
+	if "$TRAFFIC" reload > "$TEMP_PREFIX.reload.out" 2> "$error"; then
+		rm -f "$TEMP_PREFIX.reload.out" "$error"
+		return 0
+	fi
+	message="$(tr '\r\n' '  ' < "$error" | cut -c 1-240)"
+	[ -n "$message" ] || message='运行中的数据通道 reload 失败，supervisor 将自动重试'
+	log_event error acceleration "$message"
+	rm -f "$TEMP_PREFIX.reload.out" "$error"
+	printf '%s\n' "$message" >&2
+	return 1
+}
+
 control_runtime_prepare() {
-	private_json_ready /etc/biubiu-acc/profile.json || fail '节点配置尚未获取'
-	private_json_ready /etc/biubiu-acc/authorization.json || fail '数据通道尚未授权'
-	run_cli runtime-prepare runtime-prepare || exit 1
+	private_json_ready /etc/biubiu-acc/pc-profile.json || fail '节点配置尚未获取'
+	private_json_ready /etc/biubiu-acc/pc-authorization.json || fail '数据通道尚未授权'
+	run_cli pc-runtime-prepare pc-runtime-prepare || exit 1
+	reload_data_plane_if_enabled || exit 1
 	log_event info control 'Runtime configuration materialized'
 	emit_message '运行时通道配置已生成'
 }
@@ -301,9 +420,9 @@ control_acceleration_action() {
 		start|restart)
 			private_json_ready /etc/biubiu-acc/session.json || fail '账号尚未登录'
 			private_json_ready /etc/biubiu-acc/acceleration-key.json || fail '加速业务公钥尚未配置'
-			private_json_ready /etc/biubiu-acc/profile.json || fail '请先获取节点配置'
-			private_json_ready /etc/biubiu-acc/authorization.json || fail '请先登录数据通道'
-			run_cli runtime-prepare runtime-prepare || exit 1
+			private_json_ready /etc/biubiu-acc/pc-profile.json || fail '请先获取节点配置'
+			private_json_ready /etc/biubiu-acc/pc-authorization.json || fail '请先登录数据通道'
+			run_cli pc-runtime-prepare pc-runtime-prepare || exit 1
 			if [ "$action" = restart ]; then
 				"$TRAFFIC" stop >/dev/null 2>&1 || true
 			fi
@@ -343,22 +462,26 @@ service_running() {
 }
 
 snapshot() {
-	local version session_json key_json authenticated refreshable method cookies
+	local version session_json key_json authenticated refreshable method cookies cookie_transport_ready
 	local key_cached key_version key_bits fingerprint manager_enabled running phase message
 	local acceleration_enabled openclash_mode profile_cached authorization_cached runtime_cached
+	local runtime_expired
 	local data_plane_ready control_api data_channel traffic_steering automatic_matching
+	local provider_tcp_rules provider_udp_rules provider_tcp_domains provider_udp_domains
+	local provider_rules_available provider_domain_rules_available route_rules_available
 	local traffic_json traffic_active traffic_pid traffic_message
 	local scope selected_games selected_game_count game
 	local target_name target_ip target_mac target_id area_id platform_id log_level
 	local pid rss uptime_seconds process_start boot_seconds clock_ticks
 
 	version="$($CLI version 2>/dev/null | awk '{print $2; exit}')"
-	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false,"refreshable":false,"method":"none","cookieCount":0}')"
+	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false,"refreshable":false,"method":"none","cookieCount":0,"cookieTransportReady":false}')"
 	key_json="$($CLI acc-key-status 2>/dev/null || printf '{"cached":false}')"
 	authenticated="$(json_field "$session_json" authenticated)"
 	refreshable="$(json_field "$session_json" refreshable)"
 	method="$(json_field "$session_json" method)"
 	cookies="$(json_field "$session_json" cookieCount)"
+	cookie_transport_ready="$(json_field "$session_json" cookieTransportReady)"
 	key_cached="$(json_field "$key_json" cached)"
 	key_version="$(json_field "$key_json" keyVersion)"
 	key_bits="$(json_field "$key_json" rsaBits)"
@@ -382,9 +505,34 @@ snapshot() {
 	profile_cached=0
 	authorization_cached=0
 	runtime_cached=0
-	private_json_ready /etc/biubiu-acc/profile.json && profile_cached=1
-	private_json_ready /etc/biubiu-acc/authorization.json && authorization_cached=1
-	private_json_ready /etc/biubiu-acc/runtime.json && runtime_cached=1
+	runtime_expired=0
+	private_json_ready /etc/biubiu-acc/pc-profile.json && profile_cached=1
+	private_json_ready /etc/biubiu-acc/pc-authorization.json && authorization_cached=1
+	private_json_ready /etc/biubiu-acc/runtime.json && \
+		runtime_is_expired /etc/biubiu-acc/runtime.json && runtime_expired=1
+	runtime_json_ready /etc/biubiu-acc/runtime.json && runtime_cached=1
+	provider_tcp_rules=''
+	provider_udp_rules=''
+	provider_tcp_domains=''
+	provider_udp_domains=''
+	provider_rules_available=0
+	provider_domain_rules_available=0
+	if [ "$runtime_cached" -eq 1 ]; then
+		provider_tcp_rules="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.tcpRules[*]' 2>/dev/null)"
+		provider_udp_rules="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.udpRules[*]' 2>/dev/null)"
+		provider_tcp_domains="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.tcpDomains[*]' 2>/dev/null)"
+		provider_udp_domains="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.udpDomains[*]' 2>/dev/null)"
+		[ -n "$provider_tcp_domains$provider_udp_domains" ] && provider_domain_rules_available=1
+		[ -n "$provider_tcp_rules$provider_udp_rules" ] && provider_rules_available=1
+		[ "$provider_domain_rules_available" -eq 1 ] && provider_rules_available=1
+	fi
+	route_rules_available=0
+	for game in $selected_games; do
+		case "$game" in
+			steam|counter-strike-2) route_rules_available=1 ;;
+		esac
+	done
+	[ "$provider_rules_available" -eq 1 ] && route_rules_available=1
 	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
 	traffic_active="$(traffic_field "$traffic_json" accelerating)"
 	traffic_pid="$(traffic_field "$traffic_json" pid)"
@@ -439,9 +587,15 @@ snapshot() {
 	elif [ "$authorization_cached" -ne 1 ]; then
 		phase='channel_required'
 		message='数据通道尚未授权'
+	elif [ "$runtime_cached" -ne 1 ] && [ "$runtime_expired" -eq 1 ]; then
+		phase='runtime_expired'
+		message='数据通道授权已过期，正在等待续期'
 	elif [ "$runtime_cached" -ne 1 ]; then
 		phase='runtime_required'
 		message='运行时通道配置尚未生成'
+	elif [ "$route_rules_available" -ne 1 ]; then
+		phase='rules_required'
+		message='当前配置没有可接管的游戏规则，请重新获取节点配置或选择内置游戏'
 	elif [ "$traffic_active" -eq 1 ]; then
 		phase='accelerating'
 		message='数据通道运行中，已接管所选游戏流量'
@@ -460,6 +614,7 @@ snapshot() {
 	json_add_boolean accelerating "$traffic_active"
 	json_add_boolean acceleration_enabled "$acceleration_enabled"
 	json_add_boolean data_plane_ready "$data_plane_ready"
+	json_add_boolean route_rules_available "$route_rules_available"
 	json_add_string phase "$phase"
 	json_add_string phase_message "$message"
 	json_add_int pid "$pid"
@@ -474,6 +629,9 @@ snapshot() {
 	json_add_boolean profile_cached "$profile_cached"
 	json_add_boolean authorization_cached "$authorization_cached"
 	json_add_boolean runtime_cached "$runtime_cached"
+	json_add_boolean runtime_expired "$runtime_expired"
+	json_add_boolean provider_rules_available "$provider_rules_available"
+	json_add_boolean provider_domain_rules_available "$provider_domain_rules_available"
 	json_add_boolean ready "$data_plane_ready"
 	json_close_object
 	json_add_object session
@@ -481,6 +639,7 @@ snapshot() {
 	json_add_boolean refreshable "$(bool_value "$refreshable")"
 	json_add_string method "${method:-none}"
 	json_add_int cookie_count "$cookies"
+	json_add_boolean cookie_transport_ready "$(bool_value "$cookie_transport_ready")"
 	json_close_object
 	json_add_object acceleration_key
 	json_add_boolean cached "$(bool_value "$key_cached")"
@@ -536,7 +695,9 @@ match_status() {
 	local has_steam=0 has_cs2=0
 	local matches kind protocol source destination port packets bytes hints_available
 	local flow_count total_packets total_bytes sample_truncated
-	local traffic_json traffic_active data_plane_ready
+	local traffic_json traffic_active data_plane_ready provider_tcp_rules provider_udp_rules
+	local provider_tcp_domains provider_udp_domains provider_rules_available
+	local provider_tcp_domain_rules provider_udp_domain_rules provider_domain_rules_available
 
 	scope="$(uci_get main scope lan)"
 	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
@@ -546,10 +707,33 @@ match_status() {
 	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
 	traffic_active="$(bool_value "$(traffic_field "$traffic_json" accelerating)")"
 	data_plane_ready=0
-	private_json_ready /etc/biubiu-acc/profile.json && \
-	private_json_ready /etc/biubiu-acc/authorization.json && \
-	private_json_ready /etc/biubiu-acc/runtime.json && \
+	private_json_ready /etc/biubiu-acc/pc-profile.json && \
+	private_json_ready /etc/biubiu-acc/pc-authorization.json && \
+	runtime_json_ready /etc/biubiu-acc/runtime.json && \
 	[ -x /usr/bin/biubiu-accd ] && data_plane_ready=1
+	provider_tcp_rules=''
+	provider_udp_rules=''
+	provider_tcp_domains=''
+	provider_udp_domains=''
+	provider_tcp_domain_rules=''
+	provider_udp_domain_rules=''
+	provider_rules_available=0
+	provider_domain_rules_available=0
+	if runtime_json_ready /etc/biubiu-acc/runtime.json; then
+		provider_tcp_rules="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.tcpRules[*]' 2>/dev/null)"
+		provider_udp_rules="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.udpRules[*]' 2>/dev/null)"
+		provider_tcp_domains="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.tcpDomains[*]' 2>/dev/null)"
+		provider_udp_domains="$(jsonfilter -i /etc/biubiu-acc/runtime.json -e '@.udpDomains[*]' 2>/dev/null)"
+		provider_tcp_domain_rules="$(provider_domain_rules_from_nft tcp)"
+		provider_udp_domain_rules="$(provider_domain_rules_from_nft udp)"
+		[ -n "$provider_tcp_domain_rules" ] && provider_tcp_rules="${provider_tcp_rules}${provider_tcp_rules:+
+}${provider_tcp_domain_rules}"
+		[ -n "$provider_udp_domain_rules" ] && provider_udp_rules="${provider_udp_rules}${provider_udp_rules:+
+}${provider_udp_domain_rules}"
+		[ -n "$provider_tcp_domains$provider_udp_domains" ] && provider_domain_rules_available=1
+		[ "$provider_domain_rules_available" -eq 1 ] && provider_rules_available=1
+		[ -n "$provider_tcp_rules$provider_udp_rules" ] && provider_rules_available=1
+	fi
 	if [ "$scope" = device ] && ! valid_ipv4 "$target_ip"; then
 		match_status_error '指定设备地址无效或尚未配置'
 		return 0
@@ -589,7 +773,8 @@ match_status() {
 
 	matches="$TEMP_PREFIX.matches"
 	awk -v scope="$scope" -v target="$target_ip" -v lan_cidr="$lan_cidr" \
-		-v tcp_ports="$tcp_ports" -v udp_ports="$udp_ports" '
+		-v tcp_ports="$tcp_ports" -v udp_ports="$udp_ports" \
+		-v provider_tcp_rules="$provider_tcp_rules" -v provider_udp_rules="$provider_udp_rules" '
 	function ip_number(text, parts, count, octet, number) {
 		count = split(text, parts, ".")
 		if (count != 4)
@@ -628,6 +813,23 @@ match_status() {
 		}
 		return 0
 	}
+	function route_matches(address, port, specs, entries, count, item, separator, cidr, ports) {
+		if (specs == "")
+			return 0
+		count = split(specs, entries, "\n")
+		for (item = 1; item <= count; item++) {
+			if (entries[item] == "")
+				continue
+			separator = index(entries[item], "|")
+			if (separator <= 1)
+				continue
+			cidr = substr(entries[item], 1, separator - 1)
+			ports = substr(entries[item], separator + 1)
+			if (in_lan(address, cidr) && (ports == "*" || port_in_list(port, ports)))
+				return 1
+		}
+		return 0
+	}
 	$1 == "ipv4" {
 		protocol = $3
 		source = destination = port = packets = bytes = ""
@@ -649,8 +851,10 @@ match_status() {
 			next
 		if (scope == "lan" && !in_lan(source, lan_cidr))
 			next
-		if ((protocol == "tcp" && port_in_list(port, tcp_ports)) ||
-			(protocol == "udp" && port_in_list(port, udp_ports))) {
+		if ((protocol == "tcp" &&
+			(port_in_list(port, tcp_ports) || route_matches(destination, port, provider_tcp_rules))) ||
+			(protocol == "udp" &&
+			(port_in_list(port, udp_ports) || route_matches(destination, port, provider_udp_rules)))) {
 			matched++
 			total_packets += packets + 0
 			total_bytes += bytes + 0
@@ -695,7 +899,7 @@ match_status() {
 		json_add_string '' "$port"
 	done
 	json_close_array
-	if [ -n "$tcp_ports$udp_ports" ]; then
+	if [ -n "$tcp_ports$udp_ports" ] || [ "$provider_rules_available" -eq 1 ]; then
 		hints_available=1
 	else
 		hints_available=0
@@ -732,6 +936,8 @@ match_status() {
 	json_add_int bytes "$total_bytes"
 	json_add_boolean sample_truncated "$sample_truncated"
 	json_add_boolean data_plane_ready "$data_plane_ready"
+	json_add_boolean provider_rules_available "$provider_rules_available"
+	json_add_boolean provider_domain_rules_available "$provider_domain_rules_available"
 	json_add_boolean traffic_steering "$traffic_active"
 	json_dump
 	printf '\n'
@@ -741,6 +947,16 @@ match_status() {
 save_config() {
 	local scope requested_games selected_games game game_count
 	local target_name target_ip target_mac target_id area_id platform_id log_level openclash_mode
+	local old_scope old_selected_games old_target_ip old_target_id old_area_id old_platform_id
+	local old_openclash_mode data_plane_changed
+	config_load "$CONFIG"
+	old_scope="$(uci_get main scope lan)"
+	old_selected_games="$(config_list_foreach main selected_game print_selected_game)"
+	old_target_ip="$(uci_get main target_ip '')"
+	old_target_id="$(uci_get main target_id '')"
+	old_area_id="$(uci_get main area_id '')"
+	old_platform_id="$(uci_get main platform_id '')"
+	old_openclash_mode="$(uci_get main openclash_mode exclusive)"
 	scope="$(request_value scope)"
 	requested_games="$(request_values selected_games)"
 	target_name="$(request_value target_name)"
@@ -771,6 +987,17 @@ save_config() {
 	[ -z "$platform_id" ] || decimal_value "$platform_id" 20 || fail '平台 ID 必须是数字'
 	case "$log_level" in debug|info|warn|error) ;; *) fail '日志级别无效' ;; esac
 	case "$openclash_mode" in exclusive) ;; *) fail 'OpenClash 冲突策略无效' ;; esac
+	data_plane_changed=0
+	if [ "$old_scope" != "$scope" ] || [ "$old_selected_games" != "$selected_games" ] ||
+		[ "$old_target_ip" != "$target_ip" ] || [ "$old_target_id" != "$target_id" ] ||
+		[ "$old_area_id" != "$area_id" ] || [ "$old_platform_id" != "$platform_id" ] ||
+		[ "$old_openclash_mode" != "$openclash_mode" ]; then
+		data_plane_changed=1
+	fi
+	if [ "$data_plane_changed" -eq 1 ]; then
+		invalidate_data_plane
+		log_event info config 'Data-plane artifacts invalidated before config change'
+	fi
 
 	uci -q set "$CONFIG.main=biubiu_acc"
 	uci -q set "$CONFIG.main.schema_version=2"
@@ -823,18 +1050,21 @@ login_sms() {
 		exit 1
 	fi
 	code=''
+	invalidate_data_plane
 	log_event info account 'SMS login completed and session stored'
 	emit_message '登录成功，会话已安全保存'
 }
 
 refresh_session() {
 	run_cli session-refresh session-refresh || exit 1
+	invalidate_data_plane
 	log_event info account 'Session refreshed'
 	emit_message '账号会话已续期'
 }
 
 clear_session() {
 	run_cli session-clear session-clear || exit 1
+	invalidate_data_plane
 	log_event info account 'Local session removed'
 	emit_message '本地账号会话已清除'
 }
@@ -850,6 +1080,12 @@ import_key() {
 	value=''
 	log_event info key 'Acceleration public key imported'
 	emit_message '加速业务公钥已导入'
+}
+
+fetch_key() {
+	run_cli key_fetch acc-key-fetch || exit 1
+	log_event info key 'Acceleration public key fetch completed'
+	emit_message '已从官方配置接口获取并缓存加速业务公钥'
 }
 
 self_test() {
@@ -906,8 +1142,9 @@ handle_request() {
 		sms_login) login_sms ;;
 		session_refresh) refresh_session ;;
 		session_clear) clear_session ;;
-		import_key) import_key ;;
-		self_test) self_test ;;
+	import_key) import_key ;;
+	fetch_key) fetch_key ;;
+	self_test) self_test ;;
 		game_list) control_game_list ;;
 		game_search) control_game_search ;;
 		check_speedup) control_check_speedup ;;

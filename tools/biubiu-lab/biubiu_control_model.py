@@ -20,12 +20,16 @@ SEARCH_GAME_ENDPOINT = "/api/ping-server.game.ns.searchGame?df=adat&ver=1.0.0"
 CHECK_SPEEDUP_ENDPOINT = (
     "/api/ping-server.biuvpn.game.checkSpeedup?df=adat&ver=1.0.0"
 )
+PC_CHECK_SPEEDUP_ENDPOINT = (
+    "/api/ping-server.biuvpn.game.checkSpeedup?ver=1.0.0"
+)
+PC_GAME_MAP_ENDPOINT = "/api/ping-server.game.pc.map?ver=1.0.0"
 SPEEDUP_CONFIG_ENDPOINT = (
     "/api/ping-server.biuvpn.game.getSpeedupConfig?df=adat&ver=1.0.1"
 )
-SIGNAL_LOGIN_ENDPOINT = "/api/ping-signal.open.login.loginV2?df=adat&ver=1.0.0"
+SIGNAL_LOGIN_ENDPOINT = "/api/ping-signal.open.login.loginV2?ver=1.0.0&df=adat"
 CHANNEL_TICKET_ENDPOINT = (
-    "/api/ping-signal.open.auth.getChannelStV2?df=adat&ver=1.0.0"
+    "/api/ping-signal.open.auth.getChannelStV2?ver=1.0.0&df=adat"
 )
 
 CHANNEL_PROTOCOLS = frozenset({"TCP", "UDP", "ICMP"})
@@ -33,13 +37,34 @@ ENGINE_PROTOCOL_IDS = {"ICMP": 1, "TCP": 6, "UDP": 0x11}
 
 
 class Platform(IntEnum):
+    ALL = 0
+    UNDEFINED = 1
     ANDROID = 2
     IOS = 3
+    SIMULATOR = 4
+    PC_WEB = 5
     PC = 6
     SWITCH = 7
     PLAYSTATION = 8
     XBOX = 9
     STEAM_DECK = 10
+
+
+PC_PLATFORM_NAMES = {
+    Platform.ALL: "all",
+    Platform.UNDEFINED: "undefine",
+    Platform.ANDROID: "android",
+    Platform.IOS: "ios",
+    Platform.SIMULATOR: "simulator",
+    Platform.PC_WEB: "pcweb",
+    Platform.PC: "pc",
+    Platform.SWITCH: "switch",
+    Platform.XBOX: "xbox",
+    Platform.PLAYSTATION: "ps",
+    Platform.STEAM_DECK: "steamdeck",
+}
+PC_ACCELERATION_MODES = frozenset({3, 4, 5})
+PC_FALLBACK_MODES = (3, 5)
 
 
 @dataclass(frozen=True)
@@ -247,8 +272,15 @@ def _request(
     identity: AccountIdentity,
     client_template: Mapping[str, Any],
     request_id: str | None,
+    *,
+    native: bool = False,
 ) -> ControlRequest:
-    if not endpoint.startswith("/api/") or "df=adat" not in endpoint:
+    if not endpoint.startswith("/api/"):
+        raise ValueError("control endpoint must use the API namespace")
+    if native:
+        if "?ver=" not in endpoint or "df=adat" in endpoint:
+            raise ValueError("native endpoint must defer the ADAT query parameter")
+    elif "df=adat" not in endpoint:
         raise ValueError("control endpoint must use the ADAT API")
     request_id = new_request_id() if request_id is None else request_id
     if not _ascii_decimal(request_id) or len(request_id) > 32:
@@ -319,6 +351,128 @@ def check_speedup_request(
     return _request(CHECK_SPEEDUP_ENDPOINT, data, identity, client_template, request_id)
 
 
+def pc_check_speedup_request(
+    identity: AccountIdentity,
+    client_template: Mapping[str, Any],
+    game_id: int,
+    area_id: int,
+    *,
+    polling: int = 0,
+    use_member_speedup_experience: bool = False,
+    last_jitter_time: int | None = None,
+    request_id: str | None = None,
+) -> ControlRequest:
+    if not isinstance(use_member_speedup_experience, bool):
+        raise ValueError("member speedup experience flag must be boolean")
+    data: dict[str, Any] = {
+        "gameId": _positive_int(game_id, "game ID"),
+        "areaId": _positive_int(area_id, "area ID"),
+        "polling": _nonnegative_int(polling, "polling"),
+        "useMemberSpeedUpExperience": use_member_speedup_experience,
+    }
+    if last_jitter_time is not None:
+        data["lastJitterTime"] = _nonnegative_int(
+            last_jitter_time, "last jitter time"
+        )
+    return _request(
+        PC_CHECK_SPEEDUP_ENDPOINT,
+        data,
+        identity,
+        client_template,
+        request_id,
+        native=True,
+    )
+
+
+def pc_game_map_request(
+    identity: AccountIdentity,
+    client_template: Mapping[str, Any],
+    game_ids: Sequence[int],
+    *,
+    request_id: str | None = None,
+) -> ControlRequest:
+    if isinstance(game_ids, (str, bytes)) or not isinstance(game_ids, Sequence):
+        raise ValueError("game IDs must be a sequence")
+    normalized = [_positive_int(game_id, "game ID") for game_id in game_ids]
+    if not normalized or len(normalized) > 50:
+        raise ValueError("game map accepts between 1 and 50 game IDs")
+    return _request(
+        PC_GAME_MAP_ENDPOINT,
+        {"gameIds": normalized},
+        identity,
+        client_template,
+        request_id,
+        native=True,
+    )
+
+
+def pc_start_metadata(
+    game: Mapping[str, Any],
+    game_id: int,
+    area_id: int,
+    *,
+    selected_mode: int | None = None,
+) -> dict[str, Any]:
+    if not isinstance(game, Mapping):
+        raise ValueError("game map entry must be an object")
+    game_id = _positive_int(game_id, "game ID")
+    area_id = _positive_int(area_id, "area ID")
+    game_info = game.get("gameInfo")
+    areas = game.get("areaList")
+    if not isinstance(game_info, Mapping) or not isinstance(areas, Sequence):
+        raise ValueError("game map entry has no game or area metadata")
+    if game_info.get("gameId") != game_id:
+        raise ValueError("game map entry does not match the game ID")
+    platform_value = game_info.get("platformId")
+    if isinstance(platform_value, bool) or not isinstance(platform_value, int):
+        raise ValueError("game map entry has an invalid platform ID")
+    try:
+        platform = Platform(platform_value)
+    except ValueError as exc:
+        raise ValueError("game map entry has an unsupported platform ID") from exc
+    if not any(
+        isinstance(area, Mapping) and area.get("areaId") == area_id
+        for area in areas
+    ):
+        raise ValueError("game map entry does not contain the area ID")
+
+    raw_modes = game.get("speedupModelList")
+    if raw_modes is None:
+        raw_modes = []
+    if isinstance(raw_modes, (str, bytes)) or not isinstance(raw_modes, Sequence):
+        raise ValueError("speedup model list must be an array")
+    modes: list[int] = []
+    for entry in raw_modes:
+        if not isinstance(entry, Mapping):
+            raise ValueError("speedup model entry must be an object")
+        mode = entry.get("speedupModelId")
+        if isinstance(mode, bool) or not isinstance(mode, int) or mode not in PC_ACCELERATION_MODES:
+            raise ValueError("speedup model entry has an unsupported ID")
+        if mode not in modes:
+            modes.append(mode)
+    if not modes:
+        modes = list(PC_FALLBACK_MODES)
+    if selected_mode is None:
+        selected_mode = modes[0]
+    if (
+        isinstance(selected_mode, bool)
+        or not isinstance(selected_mode, int)
+        or selected_mode not in modes
+    ):
+        raise ValueError("selected speedup model is not available")
+    ordered_modes = [selected_mode] + [mode for mode in modes if mode != selected_mode]
+    return {
+        "gameId": game_id,
+        "gameArea": area_id,
+        "serverId": 0,
+        "accMode": selected_mode,
+        "accModeList": ordered_modes,
+        "accPodId": "auto",
+        "gamePlatform": PC_PLATFORM_NAMES[platform],
+        "gamePlatformId": int(platform),
+    }
+
+
 def speedup_config_request(
     identity: AccountIdentity,
     client_template: Mapping[str, Any],
@@ -328,17 +482,34 @@ def speedup_config_request(
     *,
     package_request: Mapping[str, Any],
     space: int = 0,
+    client_session_id: str = "",
+    scout_path_result: Mapping[str, Any] | None = None,
+    optimize_mode: int = 0,
+    dual_net_online: int = 0,
     request_id: str | None = None,
 ) -> ControlRequest:
     if not isinstance(platform, Platform):
         raise ValueError("platform must be a known Platform value")
     if not isinstance(package_request, Mapping):
         raise ValueError("package request must be an object")
+    if not isinstance(client_session_id, str) or len(client_session_id) > 256:
+        raise ValueError("client session ID must be a string")
+    if scout_path_result is None:
+        scout_path_result = {"strategyId": "", "detectResult": []}
+    if not isinstance(scout_path_result, Mapping):
+        raise ValueError("scout path result must be an object")
+    optimize_mode = _nonnegative_int(optimize_mode, "optimize mode")
+    if dual_net_online not in (0, 1):
+        raise ValueError("dual net online must be 0 or 1")
     data = {
         "gameId": _positive_int(game_id, "game ID"),
         "areaId": _positive_int(area_id, "area ID"),
         "space": _nonnegative_int(space, "space"),
         "platformId": int(platform),
+        "clientSessionId": client_session_id,
+        "scoutPathResult": copy.deepcopy(dict(scout_path_result)),
+        "optimizeMode": optimize_mode,
+        "dualNetOnline": dual_net_online,
         "pkgRequest": copy.deepcopy(dict(package_request)),
     }
     return _request(SPEEDUP_CONFIG_ENDPOINT, data, identity, client_template, request_id)
@@ -357,6 +528,18 @@ def signal_login_request(
         raise ValueError("engine client must be an object")
     if not isinstance(signal_ticket, str) or not signal_ticket:
         raise ValueError("signal ticket must not be empty")
+    channel_list = _signal_login_channels(channels)
+    data = {
+        "engineClient": copy.deepcopy(dict(engine_client)),
+        "list": channel_list,
+        "signalSt": signal_ticket,
+    }
+    return _request(SIGNAL_LOGIN_ENDPOINT, data, identity, client_template, request_id)
+
+
+def _signal_login_channels(
+    channels: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
     channel_list: list[dict[str, Any]] = []
     for index, channel in enumerate(channels):
         name = f"channels[{index}]"
@@ -377,12 +560,38 @@ def signal_login_request(
         )
     if not channel_list:
         raise ValueError("signal login requires at least one data channel")
+    return channel_list
+
+
+def pc_signal_login_request(
+    identity: AccountIdentity,
+    client_template: Mapping[str, Any],
+    engine_client: Mapping[str, Any],
+    channels: Sequence[Mapping[str, Any]],
+    signal_ticket: str,
+) -> ControlRequest:
+    """Build the native Windows loginV2 payload in serializer order."""
+
+    if not isinstance(engine_client, Mapping):
+        raise ValueError("engine client must be an object")
+    if not isinstance(signal_ticket, str) or not signal_ticket:
+        raise ValueError("signal ticket must not be empty")
+    client = _authenticated_client(client_template, identity)
     data = {
-        "engineClient": copy.deepcopy(dict(engine_client)),
-        "list": channel_list,
         "signalSt": signal_ticket,
+        "engineClient": copy.deepcopy(dict(engine_client)),
+        "list": _signal_login_channels(channels),
     }
-    return _request(SIGNAL_LOGIN_ENDPOINT, data, identity, client_template, request_id)
+    return ControlRequest(
+        endpoint=SIGNAL_LOGIN_ENDPOINT,
+        body={
+            "client": json.dumps(client, ensure_ascii=False, separators=(",", ":")),
+            "data": data,
+            # The desktop service leaves ClientData.id zero-initialized. The
+            # selected accPodId is part of the separate start configuration.
+            "id": "",
+        },
+    )
 
 
 def _parse_channel_authorizations(

@@ -26,7 +26,6 @@ def valid_profile() -> dict:
                 "ip": "192.0.2.11",
                 "port": 5000,
                 "bip": "192.0.2.12",
-                "bisp": 2,
                 "encryption": False,
             },
         ],
@@ -66,7 +65,7 @@ def valid_profile() -> dict:
                     "mode": "bolt",
                     "cidrList": ["203.0.113.5/24"],
                     "outboundId": "accelerated",
-                    "protocol": 17,
+                    "protocol": 2,
                     "portList": ["27000-27100", 443],
                 }
             ],
@@ -81,9 +80,14 @@ class ProfileModelTests(unittest.TestCase):
         self.assertEqual(profile.tun.local_networks, ("10.222.0.0/16",))
         self.assertEqual(profile.routes[0].selectors, ("203.0.113.0/24",))
         self.assertEqual(profile.routes[0].ports, ("27000-27100", "443"))
+        self.assertEqual(profile.routes[0].protocol, 17)
         self.assertEqual(
             [channel.protocol for channel in profile.outbounds[1].channels],
             ["TCP", "UDP"],
+        )
+        self.assertEqual(
+            profile.outbounds[1].channels[1].bip_address,
+            "192.0.2.12",
         )
         self.assertEqual(
             profile.summary(),
@@ -109,6 +113,53 @@ class ProfileModelTests(unittest.TestCase):
     def test_json_document_is_supported(self) -> None:
         parsed = profile_model.parse_acceleration_profile(json.dumps(valid_profile()))
         self.assertEqual(parsed.default_outbound_id, "direct")
+
+    def test_acceleration_outbound_follows_bolt_route(self) -> None:
+        profile = profile_model.parse_acceleration_profile(valid_profile())
+        selected = profile_model.select_acceleration_outbound(profile)
+        self.assertEqual(selected.outbound_id, "accelerated")
+
+    def test_multiple_bolt_outbounds_are_selected_for_router_runtime(self) -> None:
+        document = valid_profile()
+        second = copy.deepcopy(document["outboundProfile"]["outboundConfigList"][1])
+        second["id"] = "accelerated-2"
+        document["outboundProfile"]["outboundConfigList"].append(second)
+        document["routerProfile"]["routeList"].append(
+            {
+                "id": 8,
+                "mode": "bolt",
+                "cidrIp": "192.0.2.0/24",
+                "outboundId": "accelerated-2",
+                "protocol": 3,
+                "port": 443,
+            }
+        )
+        profile = profile_model.parse_acceleration_profile(document)
+        selected = profile_model.select_acceleration_outbounds(profile)
+        self.assertEqual(
+            [outbound.outbound_id for outbound in selected],
+            ["accelerated", "accelerated-2"],
+        )
+        self.assertEqual(profile.routes[1].protocol, 6)
+
+    def test_primary_and_spare_may_share_an_outbound_id(self) -> None:
+        document = valid_profile()
+        spare = copy.deepcopy(document["outboundProfile"]["outboundConfigList"][1])
+        spare["type"] = "spare"
+        document["outboundProfile"]["outboundConfigList"].append(spare)
+
+        profile = profile_model.parse_acceleration_profile(document)
+        selected = profile_model.select_acceleration_outbounds(profile)
+
+        self.assertEqual([outbound.outbound_type for outbound in selected], ["bolt", "spare"])
+
+    def test_null_protocol_means_any(self) -> None:
+        document = valid_profile()
+        document["routerProfile"]["routeList"][0]["protocol"] = None
+
+        profile = profile_model.parse_acceleration_profile(document)
+
+        self.assertEqual(profile.routes[0].protocol, 0)
 
     def test_unknown_route_outbound_is_rejected(self) -> None:
         document = valid_profile()
@@ -136,6 +187,30 @@ class ProfileModelTests(unittest.TestCase):
         bad_port["routerProfile"]["routeList"][0]["portList"] = ["10-70000"]
         with self.assertRaisesRegex(ValueError, "ports"):
             profile_model.parse_acceleration_profile(bad_port)
+
+    def test_domain_selectors_are_normalized_and_bounded(self) -> None:
+        document = valid_profile()
+        document["routerProfile"]["routeList"][0] = {
+            "id": 7,
+            "mode": "bolt",
+            "domainList": ["Example.COM", "cdn.Example.com"],
+            "outboundId": "accelerated",
+            "protocol": 6,
+            "port": 443,
+        }
+
+        profile = profile_model.parse_acceleration_profile(document)
+        self.assertEqual(profile.routes[0].selector_kind, "domain")
+        self.assertEqual(
+            profile.routes[0].selectors,
+            ("example.com", "cdn.example.com"),
+        )
+
+        invalid = valid_profile()
+        invalid["routerProfile"]["routeList"][0]["domain"] = "*.example.com"
+        invalid["routerProfile"]["routeList"][0].pop("cidrList", None)
+        with self.assertRaisesRegex(ValueError, "DNS name"):
+            profile_model.parse_acceleration_profile(invalid)
 
     def test_observed_default_and_port_range_semantics(self) -> None:
         document = valid_profile()

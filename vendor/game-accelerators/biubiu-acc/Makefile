@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
-PKG_VERSION:=0.8.0
+PKG_VERSION:=0.10.1
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
@@ -15,15 +15,15 @@ define Package/biubiu-acc
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Experimental clean-room biubiu accelerator client
-  DEPENDS:=+ca-bundle +ip-full +jshn +jsonfilter +kmod-nft-tproxy +libcurl +libjson-c +libopenssl +nftables +uci
+  DEPENDS:=+ca-bundle +ip-full +jshn +jsonfilter +kmod-nft-tproxy +libcurl +libjson-c +libopenssl +libstdcpp +nftables +uci
   URL:=https://www.biubiu001.com/
 endef
 
 define Package/biubiu-acc/description
   An independently implemented OpenWrt client for user-authorized biubiu
   sessions. It includes the ADAT control client, profile and channel-ticket
-  storage, a Bolt v3 TCP/UDP transparent transport, and transactional traffic
-  steering with an explicit OpenClash conflict policy.
+  storage, a classic Bolt TCP/UDP data plane with optional BBNET transport, and
+  transactional traffic steering with an explicit OpenClash conflict policy.
 endef
 
 define Package/biubiu-acc/conffiles
@@ -34,6 +34,14 @@ define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) ./src/biubiu-accctl.c $(PKG_BUILD_DIR)/
 	$(CP) ./src/biubiu-accd.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/bbnet_bridge.cpp $(PKG_BUILD_DIR)/
+	$(CP) ./src/bbnet_bridge.h $(PKG_BUILD_DIR)/
+	$(CP) ./src/bbnet_transport.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/bbnet_transport.h $(PKG_BUILD_DIR)/
+	$(CP) ./src/confluence_codec.c $(PKG_BUILD_DIR)/
+	$(CP) ./src/confluence_codec.h $(PKG_BUILD_DIR)/
+	$(CP) ./src/biubiu-daemon.mk $(PKG_BUILD_DIR)/
+	$(CP) ./src/quicknet $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
@@ -42,11 +50,14 @@ define Build/Compile
 		-o $(PKG_BUILD_DIR)/biubiu-accctl \
 		$(PKG_BUILD_DIR)/biubiu-accctl.c \
 		$(TARGET_LDFLAGS) -lcurl -ljson-c -lcrypto
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) \
-		-std=c11 -Wall -Wextra -Wformat=2 -pthread \
-		-o $(PKG_BUILD_DIR)/biubiu-accd \
-		$(PKG_BUILD_DIR)/biubiu-accd.c \
-		$(TARGET_LDFLAGS) -ljson-c -lcrypto -pthread
+	$(MAKE) -C $(PKG_BUILD_DIR) -f biubiu-daemon.mk \
+		CC="$(TARGET_CC)" \
+		CXX="$(TARGET_CXX)" \
+		CPPFLAGS="$(TARGET_CPPFLAGS)" \
+		CFLAGS="$(TARGET_CFLAGS)" \
+		CXXFLAGS="$(TARGET_CFLAGS)" \
+		LDFLAGS="$(TARGET_LDFLAGS)" \
+		LDLIBS="-ljson-c -lcrypto -pthread -ldl"
 endef
 
 define Package/biubiu-acc/install

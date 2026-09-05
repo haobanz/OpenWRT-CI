@@ -88,6 +88,105 @@ class ControlModelTests(unittest.TestCase):
             {"gameId": 10, "areaId": 20, "polling": 1, "space": 0},
         )
 
+    def test_native_entitlement_omits_cold_start_jitter(self) -> None:
+        request = control.pc_check_speedup_request(
+            self.identity,
+            self.client,
+            10,
+            20,
+            request_id="17000000000001234",
+        )
+
+        self.assertEqual(request.endpoint, control.PC_CHECK_SPEEDUP_ENDPOINT)
+        self.assertNotIn("df=adat", request.endpoint)
+        self.assertEqual(
+            request.body["data"],
+            {
+                "gameId": 10,
+                "areaId": 20,
+                "polling": 0,
+                "useMemberSpeedUpExperience": False,
+            },
+        )
+
+        warm_request = control.pc_check_speedup_request(
+            self.identity,
+            self.client,
+            10,
+            20,
+            polling=1,
+            use_member_speedup_experience=True,
+            last_jitter_time=1700000000000,
+            request_id="17000000000001234",
+        )
+        self.assertEqual(warm_request.body["data"]["lastJitterTime"], 1700000000000)
+        with self.assertRaises(ValueError):
+            control.pc_check_speedup_request(
+                self.identity,
+                self.client,
+                10,
+                20,
+                last_jitter_time="undefined",  # type: ignore[arg-type]
+            )
+
+    def test_native_game_map_and_start_metadata_match_windows_client(self) -> None:
+        request = control.pc_game_map_request(
+            self.identity,
+            self.client,
+            [38780],
+            request_id="17000000000001234",
+        )
+        self.assertEqual(request.endpoint, control.PC_GAME_MAP_ENDPOINT)
+        self.assertEqual(request.body["data"], {"gameIds": [38780]})
+        self.assertNotIn("df=adat", request.endpoint)
+
+        game = {
+            "gameInfo": {"gameId": 38780, "platformId": 6},
+            "areaList": [{"areaId": 146}, {"areaId": 103}],
+            "speedupModelList": [
+                {"speedupModelId": 3},
+                {"speedupModelId": 5},
+            ],
+        }
+        metadata = control.pc_start_metadata(
+            game, 38780, 146, selected_mode=5
+        )
+        self.assertEqual(
+            metadata,
+            {
+                "gameId": 38780,
+                "gameArea": 146,
+                "serverId": 0,
+                "accMode": 5,
+                "accModeList": [5, 3],
+                "accPodId": "auto",
+                "gamePlatform": "pc",
+                "gamePlatformId": 6,
+            },
+        )
+        self.assertEqual(control.PC_PLATFORM_NAMES[control.Platform.XBOX], "xbox")
+        self.assertEqual(
+            control.PC_PLATFORM_NAMES[control.Platform.PLAYSTATION], "ps"
+        )
+
+    def test_native_start_metadata_fallback_and_mismatch_rejection(self) -> None:
+        game = {
+            "gameInfo": {"gameId": 38780, "platformId": 6},
+            "areaList": [{"areaId": 146}],
+        }
+        metadata = control.pc_start_metadata(game, 38780, 146)
+        self.assertEqual(metadata["accMode"], 3)
+        self.assertEqual(metadata["accModeList"], [3, 5])
+
+        with self.assertRaises(ValueError):
+            control.pc_start_metadata(game, 38780, 999)
+        with self.assertRaises(ValueError):
+            control.pc_start_metadata(game, 38780, 146, selected_mode=4)
+        invalid_platform = copy.deepcopy(game)
+        invalid_platform["gameInfo"]["platformId"] = 11
+        with self.assertRaises(ValueError):
+            control.pc_start_metadata(invalid_platform, 38780, 146)
+
     def test_speedup_config_keeps_platform_and_package_data(self) -> None:
         package_request = {
             "gamePackageInfo": {
@@ -110,6 +209,13 @@ class ControlModelTests(unittest.TestCase):
         )
         self.assertEqual(request.endpoint, control.SPEEDUP_CONFIG_ENDPOINT)
         self.assertEqual(request.body["data"]["platformId"], 6)
+        self.assertEqual(request.body["data"]["clientSessionId"], "")
+        self.assertEqual(
+            request.body["data"]["scoutPathResult"],
+            {"strategyId": "", "detectResult": []},
+        )
+        self.assertEqual(request.body["data"]["optimizeMode"], 0)
+        self.assertEqual(request.body["data"]["dualNetOnline"], 0)
         self.assertEqual(request.body["data"]["pkgRequest"], package_request)
 
     def test_signal_login_shape_and_validation(self) -> None:
@@ -131,12 +237,82 @@ class ControlModelTests(unittest.TestCase):
             request_id="17000000000001234",
         )
         self.assertEqual(request.endpoint, control.SIGNAL_LOGIN_ENDPOINT)
+        self.assertEqual(
+            request.endpoint,
+            "/api/ping-signal.open.login.loginV2?ver=1.0.0&df=adat",
+        )
         self.assertEqual(request.body["data"]["engineClient"], engine_client)
         self.assertEqual(request.body["data"]["list"][0]["port"], 443)
         self.assertEqual(request.body["data"]["list"][0]["proType"], "TCP")
 
         with self.assertRaises(ValueError):
             control.signal_login_request(
+                self.identity,
+                self.client,
+                engine_client,
+                [],
+                "private-signal-ticket",
+            )
+
+        self.assertEqual(
+            control.CHANNEL_TICKET_ENDPOINT,
+            "/api/ping-signal.open.auth.getChannelStV2?ver=1.0.0&df=adat",
+        )
+
+    def test_native_pc_signal_login_matches_windows_serializer(self) -> None:
+        engine_client = {
+            "appId": "biubiu",
+            "engineVersion": "1.0.0.0",
+            "gameId": 38780,
+            "areaId": 146,
+            "serverId": 0,
+            "signalSessionId": "",
+            "type": 4,
+            "uid": "123456789",
+        }
+        channels = [
+            {
+                "dataChannelIp": "192.0.2.20",
+                "port": 443,
+                "proType": "TCP",
+            },
+            {
+                "dataChannelIp": "192.0.2.21",
+                "port": 8000,
+                "proType": "UDP",
+            },
+        ]
+        request = control.pc_signal_login_request(
+            self.identity,
+            self.client,
+            engine_client,
+            channels,
+            "private-signal-ticket",
+        )
+
+        self.assertEqual(list(request.body), ["client", "data", "id"])
+        self.assertEqual(
+            list(request.body["data"]), ["signalSt", "engineClient", "list"]
+        )
+        self.assertEqual(request.body["data"]["engineClient"], engine_client)
+        self.assertEqual(request.body["data"]["list"], channels)
+        self.assertEqual(request.body["data"]["engineClient"]["type"], 4)
+        self.assertEqual(request.body["id"], "")
+        self.assertEqual(
+            json.loads(request.body["client"])["ex"]["biuid"],
+            self.identity.uid,
+        )
+
+        with self.assertRaises(ValueError):
+            control.pc_signal_login_request(
+                self.identity,
+                self.client,
+                engine_client,
+                channels,
+                "",
+            )
+        with self.assertRaises(ValueError):
+            control.pc_signal_login_request(
                 self.identity,
                 self.client,
                 engine_client,

@@ -12,6 +12,15 @@ from typing import Iterable
 PROTOCOL_VERSION = 3
 DATA_HEADER_LENGTH = 11
 
+BIND_REQUEST_TYPE = 0
+BIND_TCP_REQUEST_TYPE = 1
+BIND_RESPONSE_TYPE = 2
+BIND_HEADER_LENGTH = 21
+BIND_PAYLOAD_LENGTH = 73
+BIND_FIXED_PAYLOAD_LENGTH = 9
+BIND_EPT_REQUEST = b"ept=1"
+BIND_EPT_KEY_PREFIX = b"ept_key="
+
 COMMAND_DATA = 0x11
 COMMAND_CONNECT_REQUEST = 0x22
 COMMAND_CONNECT_RESPONSE = 0x23
@@ -160,6 +169,102 @@ class V3Data:
     flags: int = 0
 
 
+@dataclass(frozen=True)
+class V2BindResponse:
+    status: int
+    ept_key: int | None = field(default=None, repr=False)
+
+    @property
+    def successful(self) -> bool:
+        return self.status == 1
+
+
+def encode_v2_bind(
+    channel_token: bytes,
+    session_id: int,
+    channel_st: bytes,
+    tick_count: int,
+    *,
+    ept: bool = False,
+    tcp: bool = False,
+) -> bytes:
+    """Encode a bind using the authorized signalSessionId as channel_token."""
+
+    channel_token = _bytes(channel_token, "channel token")
+    channel_st = _bytes(channel_st, "channel ticket")
+    session_id = _u32(session_id, "session ID")
+    tick_count = _u32(tick_count, "tick count")
+    if not channel_token:
+        raise ValueError("channel token must not be empty")
+    if not channel_st:
+        raise ValueError("channel ticket must not be empty")
+    if session_id == 0:
+        raise ValueError("session ID must not be zero")
+    if not isinstance(ept, bool):
+        raise ValueError("ept must be a boolean")
+    if not isinstance(tcp, bool):
+        raise ValueError("tcp must be a boolean")
+    if (
+        len(channel_token) + len(channel_st) + BIND_FIXED_PAYLOAD_LENGTH
+        > BIND_PAYLOAD_LENGTH
+    ):
+        raise ValueError("Bolt v2 bind credentials do not fit the fixed payload")
+
+    extension = BIND_EPT_REQUEST if tcp or ept else b""
+    header_length = BIND_HEADER_LENGTH + len(extension)
+    total_length = header_length + BIND_PAYLOAD_LENGTH
+    header = struct.pack(
+        "<BBHBIHIHI",
+        BIND_TCP_REQUEST_TYPE if tcp else BIND_REQUEST_TYPE,
+        header_length,
+        total_length,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    payload = (
+        struct.pack("<BI", 1, tick_count)
+        + channel_token
+        + struct.pack("<I", session_id)
+        + channel_st
+    )
+    return header + extension + payload.ljust(BIND_PAYLOAD_LENGTH, b"\x00")
+
+
+def parse_v2_bind_response(value: object) -> V2BindResponse:
+    """Apply the exact success and optional ept-key checks used by the engine."""
+
+    data = _bytes(value, "frame")
+    if len(data) < BIND_HEADER_LENGTH:
+        raise ValueError("Bolt v2 bind response is truncated")
+    if data[0] not in (BIND_REQUEST_TYPE, BIND_TCP_REQUEST_TYPE):
+        raise ValueError("invalid Bolt v2 outer frame type")
+    header_length = data[1]
+    total_length = struct.unpack_from("<H", data, 2)[0]
+    if header_length < BIND_HEADER_LENGTH or header_length > total_length:
+        raise ValueError("invalid Bolt v2 bind response header length")
+    if total_length != len(data):
+        raise ValueError("Bolt v2 bind response length does not match the frame")
+    if total_length - header_length < 13 or data[header_length] != BIND_RESPONSE_TYPE:
+        raise ValueError("invalid Bolt v2 bind response payload")
+    status = struct.unpack_from("<I", data, header_length + 9)[0]
+    if status != 1:
+        raise ValueError("Bolt v2 bind response did not succeed")
+
+    extension = data[BIND_HEADER_LENGTH:header_length]
+    marker = extension.find(BIND_EPT_KEY_PREFIX)
+    ept_key = None
+    if marker >= 0:
+        key_offset = marker + len(BIND_EPT_KEY_PREFIX)
+        if key_offset >= len(extension):
+            raise ValueError("Bolt v2 ept key is truncated")
+        ept_key = extension[key_offset]
+    return V2BindResponse(status=status, ept_key=ept_key)
+
+
 def _extension_bytes(
     extensions: Iterable[Extension],
 ) -> tuple[tuple[Extension, ...], bytes]:
@@ -199,7 +304,7 @@ def encode_v3_request(
         raise ValueError("Bolt v3 frame is too long")
 
     header = struct.pack(
-        ">BBHBIB",
+        "<BBHBIB",
         PROTOCOL_VERSION,
         header_length,
         total_length,
@@ -220,7 +325,7 @@ def encode_v3_data(session_id: int, connection_id: int, payload: bytes) -> bytes
     if total_length > 0xFFFF:
         raise ValueError("Bolt v3 frame is too long")
     return struct.pack(
-        ">BBHBIH",
+        "<BBHBIH",
         PROTOCOL_VERSION,
         DATA_HEADER_LENGTH,
         total_length,
@@ -239,7 +344,7 @@ def _frame(value: object, minimum_header: int) -> tuple[bytes, int, int, int]:
     if version != PROTOCOL_VERSION:
         raise ValueError("unsupported Bolt protocol version")
     header_length = data[1]
-    total_length = struct.unpack_from(">H", data, 2)[0]
+    total_length = struct.unpack_from("<H", data, 2)[0]
     if header_length < minimum_header or header_length > total_length:
         raise ValueError("invalid Bolt v3 header length")
     if total_length != len(data):
@@ -271,7 +376,7 @@ def parse_v3_request(value: object) -> V3Request:
     command = data[4]
     if command not in REQUEST_COMMANDS:
         raise ValueError("unsupported Bolt v3 request command")
-    session_id = struct.unpack_from(">I", data, 5)[0]
+    session_id = struct.unpack_from("<I", data, 5)[0]
     count = data[9]
     extensions = _parse_extensions(data, 10, header_length, count)
     return V3Request(
@@ -292,8 +397,8 @@ def parse_v3_data(value: object) -> V3Data:
     if header_length != DATA_HEADER_LENGTH:
         raise ValueError("invalid Bolt v3 data header length")
     return V3Data(
-        session_id=struct.unpack_from(">I", data, 5)[0],
-        connection_id=struct.unpack_from(">H", data, 9)[0],
+        session_id=struct.unpack_from("<I", data, 5)[0],
+        connection_id=struct.unpack_from("<H", data, 9)[0],
         payload=data[header_length:total_length],
         flags=flags,
     )
@@ -317,8 +422,8 @@ def parse_v3_response(value: object) -> V3Response:
 
     data, flags, header_length, total_length = _frame(value, 12)
     command = data[4]
-    session_id = struct.unpack_from(">I", data, 5)[0]
-    connection_id = struct.unpack_from(">H", data, 9)[0]
+    session_id = struct.unpack_from("<I", data, 5)[0]
+    connection_id = struct.unpack_from("<H", data, 9)[0]
     cursor = 11
     status: int | None = None
     if command in STATUS_COMMANDS:

@@ -2,6 +2,15 @@
 /etc/biubiu-acc/session.json
 /etc/biubiu-acc/acceleration-key.json
 /etc/biubiu-acc/game-list.json
+/etc/biubiu-acc/pc-game-list.json
+/etc/biubiu-acc/pc-game-profile.json
+/etc/biubiu-acc/pc-game-map.json
+/etc/biubiu-acc/pc-entitlement.json
+/etc/biubiu-acc/pc-user.json
+/etc/biubiu-acc/pc-context.json
+/etc/biubiu-acc/pc-profile.json
+/etc/biubiu-acc/pc-authorization.json
+/etc/biubiu-acc/pc-channel-ticket.json
 /etc/biubiu-acc/entitlement.json
 /etc/biubiu-acc/profile.json
 /etc/biubiu-acc/authorization.json

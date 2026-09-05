@@ -8,8 +8,17 @@ CLI='/usr/bin/biubiu-accctl'
 TRAFFIC='/usr/libexec/biubiu-acc-traffic'
 RUNTIME_ROOT='/tmp/biubiu-acc'
 STATE_FILE="$RUNTIME_ROOT/status.json"
+RUNTIME_FILE='/etc/biubiu-acc/runtime.json'
+CONTROL_LOCK="$RUNTIME_ROOT/control.lock"
 INTERVAL=15
+RENEW_WINDOW=120
+RENEW_COOLDOWN=300
+START_COOLDOWN=60
 LAST_PHASE=''
+LAST_RENEW_ATTEMPT=0
+LAST_START_ATTEMPT=0
+RENEW_LOCK_HELD=0
+START_LOCK_HELD=0
 
 umask 077
 
@@ -27,6 +36,175 @@ private_json_ready() {
 	owner="$(stat -c '%u' "$path" 2>/dev/null || printf 'invalid')"
 	mode="$(stat -c '%a' "$path" 2>/dev/null || printf 'invalid')"
 	[ "$owner" = 0 ] && [ "$mode" = 600 ]
+}
+
+runtime_structure_ready() {
+	local schema signal_session_id
+	private_json_ready "$RUNTIME_FILE" || return 1
+	schema="$(jsonfilter -i "$RUNTIME_FILE" -e '@.schemaVersion' 2>/dev/null | head -n 1)"
+	case "$schema" in 1|2) ;; *) return 1 ;; esac
+	signal_session_id="$(jsonfilter -i "$RUNTIME_FILE" -e '@.signalSessionId' 2>/dev/null | head -n 1)"
+	[ -n "$signal_session_id" ] || return 1
+	! printf '%s' "$signal_session_id" | grep -q '[[:cntrl:]]' || return 1
+}
+
+runtime_usable() {
+	runtime_structure_ready || return 1
+	runtime_is_expired && return 1
+	return 0
+}
+
+channel_expiry() {
+	local value expression minimum=0
+	[ -f "$RUNTIME_FILE" ] && [ ! -L "$RUNTIME_FILE" ] || {
+		printf '0\n'
+		return 0
+	}
+	for expression in '@.channels[*].expiresAt' '@.outbounds[*].channels[*].expiresAt'; do
+		for value in $(jsonfilter -i "$RUNTIME_FILE" -e "$expression" 2>/dev/null); do
+			case "$value" in ''|*[!0-9]*) continue ;; esac
+			if [ "$value" -gt 100000000000 ] 2>/dev/null; then
+				value=$((value / 1000))
+			fi
+			[ "$value" -gt 0 ] 2>/dev/null && [ "$value" -le 4102444800 ] 2>/dev/null || continue
+			if [ "$minimum" -eq 0 ] || [ "$value" -lt "$minimum" ]; then
+				minimum="$value"
+			fi
+		done
+	done
+	printf '%s\n' "$minimum"
+}
+
+runtime_is_expired() {
+	local expiry now
+	expiry="$(channel_expiry)"
+	case "$expiry" in ''|*[!0-9]*|0) return 1 ;; esac
+	now="$(date +%s 2>/dev/null || printf '0')"
+	case "$now" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$expiry" -le "$now" ] 2>/dev/null
+}
+
+stop_unusable_data_plane() {
+	local traffic_json traffic_active expiry now reason
+	[ -x "$TRAFFIC" ] || return 0
+	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
+	traffic_active="$(json_field "$traffic_json" accelerating)"
+	[ "$(bool_value "$traffic_active")" -eq 1 ] || return 0
+
+	if [ ! -f "$RUNTIME_FILE" ] || [ -L "$RUNTIME_FILE" ]; then
+		reason='runtime authorization was removed'
+	elif ! runtime_structure_ready; then
+		reason='runtime authorization metadata is invalid'
+	else
+		expiry="$(channel_expiry)"
+		now="$(date +%s 2>/dev/null || printf '0')"
+		case "$expiry" in ''|*[!0-9]*) return 0 ;; esac
+		case "$now" in ''|*[!0-9]*) return 0 ;; esac
+		# A runtime without a usable expiry is left alone; it may be an older
+		# provider response that does not advertise channel lifetime.
+		[ "$expiry" -gt 0 ] 2>/dev/null || return 0
+		[ "$expiry" -gt "$now" ] 2>/dev/null ||
+			reason='runtime authorization has expired'
+	fi
+
+	if "$TRAFFIC" stop >/dev/null 2>&1; then
+		logger -t biubiu-acc "data plane stopped: $reason"
+	else
+		logger -t biubiu-acc "[warn] data plane stop failed: $reason"
+	fi
+}
+
+renew_data_plane() {
+	local acceleration_enabled="$1" expiry now game_id area_id platform_id selected_games
+	local output error message
+	[ -x "$CLI" ] || return 0
+	runtime_structure_ready || return 0
+	expiry="$(channel_expiry)"
+	case "$expiry" in ''|*[!0-9]*|0) return 0 ;; esac
+	now="$(date +%s 2>/dev/null || printf '0')"
+	case "$now" in ''|*[!0-9]*) return 0 ;; esac
+	[ "$expiry" -le $((now + RENEW_WINDOW)) ] 2>/dev/null || return 0
+	[ "$((now - LAST_RENEW_ATTEMPT))" -ge "$RENEW_COOLDOWN" ] 2>/dev/null || return 0
+	config_load "$CONFIG"
+	config_get game_id main target_id ''
+	config_get area_id main area_id ''
+	config_get platform_id main platform_id ''
+	if [ -z "$game_id" ] || [ -z "$area_id" ] || [ -z "$platform_id" ]; then
+		selected_games="$(config_list_foreach main selected_game print_selected_game)"
+		case " $selected_games " in
+			*' counter-strike-2 '*)
+				game_id=38780
+				area_id=146
+				platform_id=6
+				;;
+		esac
+	fi
+	case "$game_id:$area_id:$platform_id" in
+		*[!0-9:]*|:*|*::|*:) return 0 ;;
+	esac
+	LAST_RENEW_ATTEMPT="$now"
+	if ! mkdir "$CONTROL_LOCK" 2>/dev/null; then
+		return 0
+	fi
+	RENEW_LOCK_HELD=1
+	output="$RUNTIME_ROOT/renew.$$.out"
+	error="$RUNTIME_ROOT/renew.$$.err"
+	if "$CLI" pc-channel-renew "$game_id" "$area_id" "$platform_id" \
+		> "$output" 2> "$error" && "$CLI" pc-runtime-prepare >> "$output" 2>> "$error"; then
+		logger -t biubiu-acc 'channel authorization renewed automatically'
+		if [ "$(bool_value "$acceleration_enabled")" -eq 1 ]; then
+			if ! "$TRAFFIC" reload >/dev/null 2> "$error"; then
+				message="$(tr '\r\n' '  ' < "$error" | cut -c 1-240)"
+				[ -n "$message" ] || message='traffic reload after renewal failed'
+				logger -t biubiu-acc "[error] renewal: $message"
+				# Keep the persistent switch enabled. The supervisor will retry the
+				# data-plane start instead of silently changing user configuration.
+			fi
+		fi
+	else
+		message="$(tr '\r\n' '  ' < "$error" | cut -c 1-240)"
+		[ -n "$message" ] || message='channel renewal failed'
+		logger -t biubiu-acc "[warn] renewal: $message"
+		stop_unusable_data_plane
+	fi
+	rm -f "$output" "$error"
+	rmdir "$CONTROL_LOCK" 2>/dev/null || true
+	RENEW_LOCK_HELD=0
+}
+
+start_data_plane() {
+	local acceleration_enabled="$1" now traffic_json traffic_active
+	local output error message
+	[ "$(bool_value "$acceleration_enabled")" -eq 1 ] || return 0
+	[ -x "$TRAFFIC" ] || return 0
+	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
+	traffic_active="$(json_field "$traffic_json" accelerating)"
+	[ "$(bool_value "$traffic_active")" -eq 0 ] || return 0
+	now="$(date +%s 2>/dev/null || printf '0')"
+	case "$now" in ''|*[!0-9]*) return 0 ;; esac
+	[ "$((now - LAST_START_ATTEMPT))" -ge "$START_COOLDOWN" ] 2>/dev/null || return 0
+	runtime_structure_ready || return 0
+	if runtime_is_expired; then
+		logger -t biubiu-acc 'data plane start skipped: runtime authorization has expired'
+		return 0
+	fi
+	LAST_START_ATTEMPT="$now"
+	if ! mkdir "$CONTROL_LOCK" 2>/dev/null; then
+		return 0
+	fi
+	START_LOCK_HELD=1
+	output="$RUNTIME_ROOT/start.$$.out"
+	error="$RUNTIME_ROOT/start.$$.err"
+	if "$TRAFFIC" start > "$output" 2> "$error"; then
+		logger -t biubiu-acc 'data plane restarted automatically'
+	else
+		message="$(tr '\r\n' '  ' < "$error" | cut -c 1-240)"
+		[ -n "$message" ] || message='automatic data-plane start failed'
+		logger -t biubiu-acc "[warn] auto-start: $message"
+	fi
+	rm -f "$output" "$error"
+	rmdir "$CONTROL_LOCK" 2>/dev/null || true
+	START_LOCK_HELD=0
 }
 
 print_selected_game() {
@@ -71,6 +249,10 @@ write_state() {
 
 cleanup() {
 	rm -f "$STATE_FILE" "$STATE_FILE.$$"
+	rm -f "$RUNTIME_ROOT/renew.$$.out" "$RUNTIME_ROOT/renew.$$.err"
+	rm -f "$RUNTIME_ROOT/start.$$.out" "$RUNTIME_ROOT/start.$$.err"
+	[ "$RENEW_LOCK_HELD" -eq 0 ] || rmdir "$CONTROL_LOCK" 2>/dev/null || true
+	[ "$START_LOCK_HELD" -eq 0 ] || rmdir "$CONTROL_LOCK" 2>/dev/null || true
 }
 
 terminate() {
@@ -85,13 +267,8 @@ chmod 0700 "$RUNTIME_ROOT"
 while :; do
 	session_json="$($CLI session-status 2>/dev/null || printf '{"authenticated":false}')"
 	key_json="$($CLI acc-key-status 2>/dev/null || printf '{"cached":false}')"
-	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
 	authenticated="$(json_field "$session_json" authenticated)"
 	key_cached="$(json_field "$key_json" cached)"
-	traffic_active="$(json_field "$traffic_json" accelerating)"
-	traffic_pid="$(json_field "$traffic_json" pid)"
-	traffic_message="$(json_field "$traffic_json" message)"
-	case "$traffic_pid" in ''|*[!0-9]*) traffic_pid=0 ;; esac
 	config_load "$CONFIG"
 	config_get scope main scope 'lan'
 	case "$scope" in lan|device) ;; *) scope='lan' ;; esac
@@ -103,9 +280,33 @@ while :; do
 	profile_cached=0
 	authorization_cached=0
 	runtime_cached=0
-	private_json_ready /etc/biubiu-acc/profile.json && profile_cached=1
-	private_json_ready /etc/biubiu-acc/authorization.json && authorization_cached=1
-	private_json_ready /etc/biubiu-acc/runtime.json && runtime_cached=1
+	private_json_ready /etc/biubiu-acc/pc-profile.json && profile_cached=1
+	private_json_ready /etc/biubiu-acc/pc-authorization.json && authorization_cached=1
+	runtime_usable && runtime_cached=1
+	stop_unusable_data_plane
+	renew_data_plane "$acceleration_enabled"
+	# Renewal replaces authorization and runtime files atomically. Re-read their
+	# readiness after the control operation before deciding whether to start.
+	profile_cached=0
+	authorization_cached=0
+	runtime_cached=0
+	private_json_ready /etc/biubiu-acc/pc-profile.json && profile_cached=1
+	private_json_ready /etc/biubiu-acc/pc-authorization.json && authorization_cached=1
+	runtime_usable && runtime_cached=1
+	if [ "$(bool_value "$authenticated")" -eq 1 ] &&
+		[ "$(bool_value "$key_cached")" -eq 1 ] &&
+		[ "$profile_cached" -eq 1 ] && [ "$authorization_cached" -eq 1 ] &&
+		[ "$runtime_cached" -eq 1 ]; then
+		start_data_plane "$acceleration_enabled"
+	fi
+	traffic_json="$($TRAFFIC status 2>/dev/null || printf '{"accelerating":false}')"
+	traffic_active="$(json_field "$traffic_json" accelerating)"
+	traffic_pid="$(json_field "$traffic_json" pid)"
+	traffic_message="$(json_field "$traffic_json" message)"
+	if [ "$(bool_value "$traffic_active")" -eq 1 ]; then
+		# Refresh resolved provider domains without restarting the data plane.
+		"$TRAFFIC" refresh >/dev/null 2>&1 || true
+	fi
 
 	if [ "$(bool_value "$authenticated")" -ne 1 ]; then
 		phase='account_required'

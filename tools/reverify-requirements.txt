@@ -1,0 +1,2 @@
+# Reverify MCP with full binary-analysis and semantic backends.
+reverify[full,angr] @ git+https://github.com/2akouwu/reverify.git@56bd5085eafc06e80ce24c4f7f8bf87d43f85f62

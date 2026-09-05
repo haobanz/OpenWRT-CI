@@ -151,11 +151,57 @@ jobs:
             vendor/game-accelerators/biubiu-acc/src/biubiu-accctl.c \
             $(pkg-config --cflags --libs libcurl json-c openssl)
           "$RUNNER_TEMP/biubiu-accctl-host" self-test
+          cc -std=c11 -Wall -Wextra -Wformat=2 -Werror \
+            -o "$RUNNER_TEMP/biubiu-accctl-context-test" \
+            tools/biubiu-lab/biubiu_accctl_context_test.c \
+            $(pkg-config --cflags --libs libcurl json-c openssl)
+          "$RUNNER_TEMP/biubiu-accctl-context-test"
+          cc -std=c11 -Wall -Wextra -Wformat=2 -Werror \
+            -o "$RUNNER_TEMP/biubiu-accctl-runtime-test" \
+            tools/biubiu-lab/biubiu_accctl_runtime_test.c \
+            $(pkg-config --cflags --libs libcurl json-c openssl)
+          "$RUNNER_TEMP/biubiu-accctl-runtime-test"
           cc -std=c11 -Wall -Wextra -Wformat=2 -Werror -pthread \
-            -o "$RUNNER_TEMP/biubiu-accd-host" \
-            vendor/game-accelerators/biubiu-acc/src/biubiu-accd.c \
+            -o "$RUNNER_TEMP/biubiu-accctl-scout-test" \
+            tools/biubiu-lab/biubiu_accctl_scout_test.c \
+            $(pkg-config --cflags --libs libcurl json-c openssl) -pthread
+          "$RUNNER_TEMP/biubiu-accctl-scout-test"
+          cc -std=c11 -Wall -Wextra -Wformat=2 -Werror \
+            -o "$RUNNER_TEMP/biubiu-confluence-test" \
+            tools/biubiu-lab/biubiu_confluence_test.c \
+            vendor/game-accelerators/biubiu-acc/src/confluence_codec.c
+          "$RUNNER_TEMP/biubiu-confluence-test"
+          cc -std=c11 -Wall -Wextra -Wformat=2 -Werror -pthread \
+            -o "$RUNNER_TEMP/biubiu-bbnet-transport-test" \
+            tools/biubiu-lab/biubiu_bbnet_transport_test.c \
+            vendor/game-accelerators/biubiu-acc/src/bbnet_transport.c \
+            vendor/game-accelerators/biubiu-acc/src/confluence_codec.c
+          "$RUNNER_TEMP/biubiu-bbnet-transport-test"
+          cc -std=gnu11 -Wall -Wextra -Wformat=2 -Werror -pthread \
+            -o "$RUNNER_TEMP/biubiu-accd-dataplane-test" \
+            tools/biubiu-lab/biubiu_accd_dataplane_test.c \
+            vendor/game-accelerators/biubiu-acc/src/confluence_codec.c \
             $(pkg-config --cflags --libs json-c openssl) -pthread
-          "$RUNNER_TEMP/biubiu-accd-host" --self-test
+          "$RUNNER_TEMP/biubiu-accd-dataplane-test"
+
+          BIUBIU_DAEMON_SOURCE="$GITHUB_WORKSPACE/vendor/game-accelerators/biubiu-acc/src"
+          BIUBIU_DAEMON_BUILD="$RUNNER_TEMP/biubiu-daemon-host"
+          mkdir -p "$BIUBIU_DAEMON_BUILD"
+          cp -a "$BIUBIU_DAEMON_SOURCE/." "$BIUBIU_DAEMON_BUILD/"
+          make -C "$BIUBIU_DAEMON_BUILD" -f biubiu-daemon.mk \
+            CFLAGS='-O2' CXXFLAGS='-O2 -Werror' \
+            LDLIBS="$(pkg-config --libs json-c openssl) -pthread -ldl"
+          "$BIUBIU_DAEMON_BUILD/biubiu-accd" --self-test
+
+          mapfile -t BBNET_OBJECTS < <(
+            find "$BIUBIU_DAEMON_BUILD/quicknet" -type f -name '*.o' | sort
+          )
+          c++ -std=gnu++11 -Wall -Wextra -Wformat=2 -Werror -pthread \
+            -o "$RUNNER_TEMP/biubiu-bbnet-handshake-test" \
+            tools/biubiu-lab/biubiu_bbnet_handshake_test.cpp \
+            "$BIUBIU_DAEMON_BUILD/bbnet_bridge.o" "${BBNET_OBJECTS[@]}" \
+            -pthread -ldl
+          "$RUNNER_TEMP/biubiu-bbnet-handshake-test"
 
       - name: Record build revision
         run: |
@@ -310,21 +356,23 @@ jobs:
             OpenClash/dae 绕过加速设备。
 
             固件预装实验性的 biubiu-acc 与 LuCI 页面，Release 也附带两个独立
-            APK。它是本仓库的独立实现，当前
-            已完成二维码协议，并实现短信验证码和隐藏输入密码登录；手机登录的
-            真实会话及安全续期已经账号本人授权验证。0.8.0 已将稳定设备 ID、
-            root 私有会话存储、脱敏状态查询和原子续期移植到 OpenWrt C 客户端，
-            并包含加速业务独立 key/IV 的 ADAT 离线编解码、外部 RSA 公钥导入、
-            0600 缓存和脱敏指纹状态；不内置受保护的引导公钥。LuCI 支持短信
+            APK。0.10.1 核心已在账号本人授权下完成真实 ADAT 信令登录、通道
+            续期和经典 Bolt TCP/UDP 绑定。实测 7 条 TCP、7 条 UDP 通道全部
+            绑定成功；生产 TCP 转发收到 HTTP 301，UDP 查询收到 2 条 DNS
+            结果并通过会话、端点校验。核心使用与已验证传输一致的经典兼容版本，
+            修复 EPT 变换、相对有效期、TCP 半关闭和 UDP 错误清理。保留独立
+            BBNET 传输实现，不将经典配置强行送入 BBNET。支持二维码、短信
+            验证码和隐藏输入密码登录，账号及节点凭据保存在 root 私有目录；
+            仅内置厂商公开 RSA 材料，不包含私钥或捕获的会话。LuCI 支持短信
             登录、整个 LAN 或指定设备作用域、Steam/CS2/Epic 内置选择、配置预检、
             自检、日志和只读实时匹配观测，原始 ID 收入高级设置，procd 管理进程
-            默认关闭。Bolt v3 帧编解码已进入 C 自检；控制 API、数据通道与游戏
-            控制 API、节点/通道授权、Bolt v3 TCP/UDP 数据通道、root 私有 runtime
+            默认关闭。游戏控制 API、节点/通道授权、经典 TCP/UDP 数据通道、root 私有 runtime
             和 nftables TPROXY 接管已经实现；LuCI 提供权益检查、节点获取、通道
             登录/续期以及启动/停止加速。启动前必须具备授权 runtime，且默认以
-            独占模式停止并在停止后恢复 OpenClash。provider 的 opaque Bolt 扩展
-            映射仍需使用账号本人授权的真实通道完成握手验证，失败会清理规则，
-            不会伪造已加速状态。
+            独占模式停止并在停止后恢复 OpenClash，失败会清理接管规则。
+            当前在线验证在本地开发机完成，路由器上的 Steam/CS2 实机接管仍待
+            验收。官方游戏目录、区服及入口/节点联动选择界面仍在适配，不能将
+            底层收发成功等同于完整客户端交互已完成。
 
             普通升级使用 squashfs-sysupgrade.bin；factory.bin 仅用于初始
             刷写或恢复。APK 包只适用于同一目标和同一内核版本。

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-biubiu-acc
-PKG_VERSION:=0.8.0
+PKG_VERSION:=0.9.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT

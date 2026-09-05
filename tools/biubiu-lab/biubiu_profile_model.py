@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
 SUPPORTED_OUTBOUND_TYPES = frozenset(
-    {"direct", "bolt", "blackhole", "bproxy", "mock", "bypath", "spare"}
+    {"direct", "bolt", "blackhole", "bproxy", "mock", "bypath", "spare", "cdn"}
 )
 SUPPORTED_ROUTE_MODES = frozenset(
     {"bolt", "direct", "blackhole", "mock", "next"}
@@ -60,6 +60,20 @@ def _integer(
     return value
 
 
+def _wire_integer(
+    value: object,
+    name: str,
+    *,
+    minimum: int = 0,
+    maximum: int = 2**31 - 1,
+) -> int:
+    """Parse integer fields that the Windows profile serializes as decimals."""
+
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        value = int(value)
+    return _integer(value, name, minimum=minimum, maximum=maximum)
+
+
 def _boolean(value: object, name: str, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -84,6 +98,34 @@ def _cidr(value: object, name: str) -> str:
         return str(ip_network(text, strict=False))
     except ValueError as exc:
         raise ValueError(f"{name} must be an IP network") from exc
+
+
+def _domain(value: object, name: str) -> str:
+    text = _string(value, name, max_length=253).lower()
+    if text == "*":
+        return text
+    if not text or text.startswith(".") or text.endswith(".") or ".." in text:
+        raise ValueError(f"{name} must be a DNS name")
+    labels = text.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in label)
+        for label in labels
+    ):
+        raise ValueError(f"{name} must be a DNS name")
+    return text
+
+
+def _domain_list(value: object, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(
+        _domain(item, f"{name}[{index}]")
+        for index, item in enumerate(_array(value, name))
+    )
 
 
 def _string_list(value: object, name: str) -> tuple[str, ...]:
@@ -121,10 +163,7 @@ class BoltChannel:
     address: str
     port: int
     isp: int = 0
-    backup_address: str = ""
-    backup_isp: int = 0
-    tertiary_address: str = ""
-    tertiary_isp: int = 0
+    bip_address: str = ""
     encrypted: bool = False
     client_parameter: str = field(default="", repr=False)
     server_parameter: str = field(default="", repr=False)
@@ -139,12 +178,11 @@ class BoltChannel:
         return cls(
             protocol=protocol,
             address=_ip(item.get("ip"), f"{name}.ip"),
-            port=_integer(item.get("port"), f"{name}.port", minimum=1, maximum=65535),
+            port=_wire_integer(
+                item.get("port"), f"{name}.port", minimum=1, maximum=65535
+            ),
             isp=_integer(item.get("isp", 0), f"{name}.isp"),
-            backup_address=_ip(item.get("bip"), f"{name}.bip", required=False),
-            backup_isp=_integer(item.get("bisp", 0), f"{name}.bisp"),
-            tertiary_address=_ip(item.get("cip"), f"{name}.cip", required=False),
-            tertiary_isp=_integer(item.get("cisp", 0), f"{name}.cisp"),
+            bip_address=_ip(item.get("bip"), f"{name}.bip", required=False),
             encrypted=_boolean(item.get("encryption"), f"{name}.encryption"),
             client_parameter=_string(
                 item.get("bbCliParam"), f"{name}.bbCliParam", required=False
@@ -237,9 +275,22 @@ class RouteRule:
             outbound_id=_string(outbound_id, f"{name}.outboundId", max_length=128),
             selector_kind=selector_kind,
             selectors=selectors,
-            protocol=_integer(item.get("protocol", 0), f"{name}.protocol", maximum=255),
+            protocol=_route_protocol(item.get("protocol"), f"{name}.protocol"),
             ports=ports,
         )
+
+
+def _route_protocol(value: object, name: str) -> int:
+    """Normalize Windows profile route values to IP protocol numbers."""
+
+    if value is None:
+        return 0
+    protocol = _integer(value, name, maximum=255)
+    if protocol == 2:
+        return 17
+    if protocol == 3:
+        return 6
+    return protocol
 
 
 def _route_selectors(item: Mapping[str, Any], name: str) -> tuple[str, tuple[str, ...]]:
@@ -248,10 +299,10 @@ def _route_selectors(item: Mapping[str, Any], name: str) -> tuple[str, tuple[str
         return "cidr_table", (_string(table_id, f"{name}.cidrTableId", max_length=128),)
     domains = item.get("domainList")
     if isinstance(domains, list) and domains:
-        return "domain", _string_list(domains, f"{name}.domainList")
+        return "domain", _domain_list(domains, f"{name}.domainList")
     domain = item.get("domain")
     if isinstance(domain, str) and domain:
-        return "domain", (_string(domain, f"{name}.domain", max_length=253),)
+        return "domain", (_domain(domain, f"{name}.domain"),)
     cidrs = item.get("cidrList")
     if isinstance(cidrs, list) and cidrs:
         return "cidr", _cidr_list(cidrs, f"{name}.cidrList")
@@ -400,8 +451,21 @@ def parse_acceleration_profile(value: object) -> AccelerationProfile:
         )
     )
     outbound_ids = [outbound.outbound_id for outbound in outbounds]
-    if not outbounds or len(outbound_ids) != len(set(outbound_ids)):
-        raise ValueError("outbound IDs must be non-empty and unique")
+    outbound_keys = [
+        (outbound.outbound_id, outbound.outbound_type) for outbound in outbounds
+    ]
+    if not outbounds or len(outbound_keys) != len(set(outbound_keys)):
+        raise ValueError("outbound ID/type pairs must be non-empty and unique")
+    for outbound_id in set(outbound_ids):
+        matching_types = {
+            outbound.outbound_type
+            for outbound in outbounds
+            if outbound.outbound_id == outbound_id
+        }
+        if len(matching_types) > 1 and not (
+            "spare" in matching_types and matching_types <= {"bolt", "bypath", "spare"}
+        ):
+            raise ValueError("only a Bolt outbound and its spare may share an ID")
 
     router_profile = _object(root.get("routerProfile"), "routerProfile")
     routes = tuple(
@@ -431,4 +495,34 @@ def parse_acceleration_profile(value: object) -> AccelerationProfile:
         routes=routes,
         default_outbound_id=default_outbound_id,
         signal=signal,
+    )
+
+
+def select_acceleration_outbounds(profile: AccelerationProfile) -> tuple[Outbound, ...]:
+    """Return every routed Bolt family outbound, followed by matching spares."""
+
+    routed_ids = {
+        route.outbound_id for route in profile.routes if route.mode == "bolt"
+    }
+    if not routed_ids:
+        routed_ids.add(profile.default_outbound_id)
+    selected = tuple(
+        outbound
+        for outbound in profile.outbounds
+        if outbound.outbound_id in routed_ids
+        and outbound.outbound_type in {"bolt", "bypath", "spare"}
+        and outbound.channels
+    )
+    if not selected:
+        raise ValueError("profile has no routed Bolt data channel")
+    return selected
+
+
+def select_acceleration_outbound(profile: AccelerationProfile) -> Outbound:
+    """Return the primary routed Bolt outbound for older lab callers."""
+
+    selected = select_acceleration_outbounds(profile)
+    return next(
+        (outbound for outbound in selected if outbound.outbound_type != "spare"),
+        selected[0],
     )

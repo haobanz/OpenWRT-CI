@@ -27,8 +27,15 @@
 			"id": "counter-strike-2",
 			"name": "Counter-Strike 2 / CSGO",
 			"category": "game",
-			"match_mode": "provider-profile-plus-hints",
-			"description": "Counter-Strike 与 Source 服务器游戏流量",
+      "match_mode": "provider-profile-plus-hints",
+      "description": "Counter-Strike 与 Source 服务器游戏流量",
+      "provider_profile": {
+        "game_id": 38780,
+        "area_id": 146,
+        "platform_id": 6,
+        "platform_name": "pc",
+        "acceleration_modes": [ 3, 5 ]
+      },
 			"identity_dns_suffixes": [],
 			"excluded_dns_suffixes": [],
 			"tcp_destination_ports": [ "27015-27050" ],

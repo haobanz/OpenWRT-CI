@@ -29,30 +29,36 @@ same time.
 
 - `biubiu-acc` is an independent implementation; it contains no vendor binary,
   private key, or embedded account credential.
-- Version 0.8.0 includes the completed QR, phone SMS, hidden password, and session-refresh
+- Version 0.10.0 includes the completed QR, phone SMS, hidden password, and session-refresh
   account paths in the OpenWrt C client. Device identity and account sessions
   use private persistent files, successful login output is redacted, and refresh
   replaces a session atomically. It also includes an offline-tested codec for
-  the acceleration API's separate key/IV ADAT envelope. An external
-  `version|base64(X.509 DER)` public key can be validated and cached in a
-  root-only file without embedding the app's protected bootstrap value.
+  the acceleration API's separate key/IV ADAT envelope. The public RSA seed
+  distributed with the official Windows client initializes a root-only cache.
+  An encrypted root-level `c=2` response can rotate that public key through
+  validated `v` and `rsaPublicKey` fields, atomically persist it, and retry the
+  interrupted request once. External `version|base64(X.509 DER)` import remains
+  available for controlled testing.
 - The CLI and LuCI management page are preinstalled and also published as
   standalone APKs. The built-in catalog exposes Steam, Counter-Strike 2/CSGO,
   and Epic Games without requiring raw IDs, with either whole-LAN or one-device
   scope. The LuCI page also exposes read-only conntrack matching diagnostics for
   bounded Steam/CS2 port hints, including packet and byte counters. The
   disabled-by-default supervisor reports account, scope, game, key, process,
-  and matching state but cannot claim acceleration. Settings are staged without
-  changing nftables or routes.
+  data-plane, and matching state. It changes nftables and routes only during an
+  explicit transactional acceleration start.
 - The C self-test includes the independently verified Bolt v3 request, response,
   and 11-byte data frame boundary. The manager now exposes ADAT game-list,
   entitlement, profile, signal-login, and channel-renew operations, then
-  materializes an authorized root-private runtime file for the native TCP/UDP
-  Bolt transport. The traffic helper installs bounded Steam/CS2 TPROXY rules
+  materializes an authorized root-private runtime file for the native BBNET
+  transport. TCP uses KCP/Confluence with one Bolt Connect per flow followed by
+  raw stream bytes; UDP uses NACK with the verified shared 21-byte datagram
+  envelope. Native PC lighthouse selection uses the recovered one-socket UDP
+  schedule and exact response statistics before requesting a speedup profile.
+  The traffic helper installs bounded Steam/CS2 TPROXY rules
   for the whole LAN or one selected device and stops/restores OpenClash under
-  the explicit exclusive policy. The provider-specific opaque extension
-  mapping still requires an owner-authorized live channel smoke test before it
-  can be called production-verified.
+  the explicit exclusive policy. A real owner-authorized channel round trip is
+  still required before the implementation can be called production-verified.
 - Protocol facts, open questions, and the clean-room boundary are documented
   in `biubiu-acc/docs/protocol.md`.
 

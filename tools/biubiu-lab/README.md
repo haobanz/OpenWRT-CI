@@ -70,18 +70,51 @@ code path supports that interpretation.
 
 `biubiu_profile_model.py` parses the observed JSON engine-profile boundary. It
 normalizes TUN CIDRs and route ports, validates outbound references, and models
-the TCP, UDP, and ICMP Bolt channel descriptors. Signal tickets and opaque
+the TCP, UDP, and ICMP channel descriptors, including the observed `bip`
+alternate path. Signal tickets and opaque
 channel parameters are excluded from object representations so test failures
 cannot print them. This parser does not implement or contact the data channel.
 
-`biubiu_bolt_model.py` models the independently observed Bolt v3 frame
-boundary. It encodes connect/associate request headers and the fixed 11-byte
-associated-data header, parses synthetic response and data frames, and
-preserves typed length-value extensions and payloads. All integers use the
-verified network byte order. It also keeps TCP connect and UDP associate
-completion command-specific and requires the returned connection ID to be
-non-zero. Opaque values and payloads are excluded from representations, and
-the module has no networking code.
+`biubiu_bolt_model.py` models the independently observed Bolt v2 bind and Bolt
+v3 transport boundaries. The v2 encoder reproduces the Windows engine's fixed
+73-byte credential payload: constant `1`, monotonic tick count, the authorized
+`signalSessionId`, data-channel session ID, channel ticket, and zero padding.
+TCP uses outer type `1` and initially requests `ept=1`; UDP uses outer type `0`.
+The response type/status is inside the payload after the variable-length
+outer header. The model also verifies the optional `ept_key=`
+header extension. The v3 model encodes connect/associate request headers and
+the fixed 11-byte data header, parses synthetic response and data frames, and
+preserves typed length-value extensions and payloads. Frame length, session,
+and connection scalars use the native engine's verified little-endian order;
+endpoint extensions retain IPv4 network byte order. TCP connect and UDP
+associate completion remain command-specific and require a non-zero returned
+connection ID. Opaque values and payloads are excluded from representations,
+and the module has no networking code. These primitives do not imply that the
+normal Windows UDP path sends an Associate request. The validated classic
+path sends a 21-byte wrapper directly over UDP; BBNET is a separate transport.
+
+`biubiu_bbnet_handshake_test.cpp` drives the vendored MIT-licensed QuickNet
+implementation against a local UDP fixture and verifies the official two-stage
+BBNET handshake, including the little-endian feature value `0x0c` and exact
+`bbSrvParam` bytes in SYN2. `biubiu_confluence_test.c` checks link control/data
+framing. `biubiu_bbnet_transport_test.c` checks Confluence-link and datagram
+lifecycle using an in-memory transport, while `biubiu_accd_dataplane_test.c`
+checks Bolt bind, classic TCP handshake/XOR/half-close behavior, the UDP
+21-byte envelope, classic remote/client field order, `dataChannelSessionId`,
+reply flags, and endpoint/session rejection. The alternate BBNET fixtures remain
+covered separately. None of these fixtures contacts the provider.
+
+The authorized 2026-09-05 online run completed independent ADAT login and
+channel renewal, classic TCP/UDP bindings, an HTTP 301 through the production
+TCP relay, and two DNS answers through the production UDP send/parser path.
+Captured authentication plaintext was removed after structural comparison.
+
+`biubiu_accctl_scout_test.c` exercises the native PC lighthouse detector
+against a local UDP echo fixture. It verifies the official scalar defaults,
+percentile rule, one-socket main/transfer schedule, globally increasing
+little-endian sequence values, and the exact five-field result shape. The
+network-free control model separately verifies that a cold native entitlement
+request omits `lastJitterTime` rather than serializing an invented value.
 
 `biubiu_match_model.py` compiles the selected built-in game profiles into a
 bounded match plan for the whole LAN or one IPv4 device. Steam/Counter-Strike
@@ -112,5 +145,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
   -s tools/biubiu-lab -p 'test_biubiu_*.py' -v
 ```
 
-No vendor bootstrap key, account credential, or captured payload is used by
-these tests.
+The official native RSA seed and the root-level `c=2` key-rotation parser are
+exercised only with public or synthetic material. No private key, account
+credential, or captured payload is used by these tests, and the suite performs
+no provider request.

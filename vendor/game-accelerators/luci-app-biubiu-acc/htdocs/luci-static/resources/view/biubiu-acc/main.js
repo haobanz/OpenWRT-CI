@@ -330,6 +330,12 @@ function showKeyModal() {
 	]);
 }
 
+function fetchKey(ev) {
+	return withBusy(ev, function() {
+		return runRequest({ operation: 'fetch_key' });
+	});
+}
+
 function showDeviceModal(device) {
 	const name = input('text', device && device.name || '', _('设备名称'));
 	const ip = input('text', device && device.ip || '', '192.168.100.175');
@@ -495,9 +501,13 @@ function renderAccount() {
 		], table([ _('项目'), _('状态') ], [
 			E('tr', {}, [ E('td', {}, _('登录状态')), E('td', {}, session.authenticated ? badge(_('已登录'), 'ok') : badge(_('未登录'), 'idle')) ]),
 			E('tr', {}, [ E('td', {}, _('登录方式')), E('td', {}, session.method || 'none') ]),
-			E('tr', {}, [ E('td', {}, _('Cookie 数量')), E('td', {}, String(session.cookie_count || 0)) ])
+			E('tr', {}, [ E('td', {}, _('Cookie 数量')), E('td', {}, String(session.cookie_count || 0)) ]),
+			E('tr', {}, [ E('td', {}, _('控制会话传输')), E('td', {}, session.cookie_transport_ready ? badge(_('已就绪'), 'ok') : badge(_('不可用'), 'warn')) ])
 		])),
-		section(_('加速业务公钥'), [ button(key.cached ? _('替换') : _('导入'), 'cbi-button-neutral', showKeyModal) ], table([ _('项目'), _('状态') ], [
+		section(_('加速业务公钥'), [
+			button(_('自动获取'), 'cbi-button-positive', fetchKey),
+			button(key.cached ? _('替换') : _('导入'), 'cbi-button-neutral', showKeyModal)
+		], table([ _('项目'), _('状态') ], [
 			E('tr', {}, [ E('td', {}, _('缓存状态')), E('td', {}, key.cached ? badge(_('已验证'), 'ok') : badge(_('未配置'), 'warn')) ]),
 			E('tr', {}, [ E('td', {}, _('密钥版本')), E('td', {}, key.cached ? String(key.key_version) : '-') ]),
 			E('tr', {}, [ E('td', {}, _('RSA 位数')), E('td', {}, key.cached ? String(key.rsa_bits) : '-') ]),
@@ -580,8 +590,16 @@ function renderAcceleration() {
 	const hasLocalHint = selectedIds.some(function(id) {
 		return id === 'steam' || id === 'counter-strike-2';
 	});
-	const idsReady = positiveId(config.target_id) && positiveId(config.area_id) &&
-		positiveId(config.platform_id);
+	const hasBuiltinPcProfile = selectedIds.indexOf('counter-strike-2') !== -1;
+	const hasProviderHint = !!dataPlane.provider_rules_available || !!matchStatus.provider_rules_available;
+	const hasProviderDomainHint = !!dataPlane.provider_domain_rules_available || !!matchStatus.provider_domain_rules_available;
+	const hasRouteHint = hasLocalHint || hasProviderHint;
+	const idsReady = hasBuiltinPcProfile ||
+		(positiveId(config.target_id) && positiveId(config.area_id) &&
+		positiveId(config.platform_id));
+	const effectiveGameId = config.target_id || (hasBuiltinPcProfile ? '38780（自动）' : '-');
+	const effectiveAreaId = config.area_id || (hasBuiltinPcProfile ? '146（自动）' : '-');
+	const effectivePlatformId = config.platform_id || (hasBuiltinPcProfile ? '6 / PC（自动）' : '-');
 	const profileReady = !!dataPlane.profile_cached;
 	const authorizationReady = !!dataPlane.authorization_cached;
 	const runtimeReady = !!dataPlane.runtime_cached;
@@ -597,7 +615,7 @@ function renderAcceleration() {
 			return withBusy(ev, function() {
 				return runRequest({ operation: 'acceleration_action', action: 'start' });
 			});
-		}, !snapshot.data_plane_ready || !hasLocalHint);
+		}, !snapshot.data_plane_ready || !hasRouteHint);
 	return E('div', {}, [
 		E('div', { 'class': calloutClass }, snapshot.phase_message || _('等待配置')),
 		section(_('加速范围'), [], E('div', { 'class': 'bba-scope-row' }, [
@@ -611,16 +629,16 @@ function renderAcceleration() {
 			: E('div', { 'class': 'bba-empty' }, _('尚未选择游戏'))),
 		renderMatchStatus(),
 		section(_('高级参数'), [ button(_('编辑'), 'cbi-button-neutral', showProfileModal) ], table([ _('项目'), _('当前值') ], [
-			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, config.target_id || '-') ]),
-			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, config.area_id || '-') ]),
-			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, config.platform_id || '-') ]),
+			E('tr', {}, [ E('td', {}, _('游戏 ID')), E('td', { 'class': 'bba-code' }, effectiveGameId) ]),
+			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, effectiveAreaId) ]),
+			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, effectivePlatformId) ]),
 			E('tr', {}, [ E('td', {}, _('日志级别')), E('td', {}, config.log_level || 'info') ]),
 			E('tr', {}, [ E('td', {}, _('OpenClash 冲突策略')), E('td', {}, config.openclash_mode || 'exclusive') ])
 		])),
 		section(_('服务端控制'), [
 			controlButton(_('刷新游戏目录'), 'game_list', !session.authenticated || !key.cached),
 			controlButton(_('检查权益'), 'check_speedup', !session.authenticated || !key.cached || !idsReady),
-			controlButton(_('获取节点配置'), 'profile_fetch', !session.authenticated || !key.cached || !idsReady),
+			controlButton(_('获取节点并授权'), 'profile_fetch', !session.authenticated || !key.cached || !idsReady),
 			controlButton(_('登录数据通道'), 'signal_login', !session.authenticated || !key.cached || !profileReady || !idsReady),
 			controlButton(_('续期数据通道'), 'channel_renew', !session.authenticated || !key.cached || !profileReady || !authorizationReady || !idsReady),
 			controlButton(_('生成运行时配置'), 'runtime_prepare', !profileReady || !authorizationReady)
@@ -633,7 +651,8 @@ function renderAcceleration() {
 			E('tr', {}, [ E('td', {}, _('数据通道授权')), E('td', {}, authorizationReady ? badge(_('已授权'), 'ok') : badge(_('未授权'), 'idle')) ]),
 			E('tr', {}, [ E('td', {}, _('运行时配置')), E('td', {}, runtimeReady ? badge(_('已生成'), 'ok') : badge(_('未生成'), 'idle')) ]),
 			E('tr', {}, [ E('td', {}, _('Bolt TCP/UDP')), E('td', {}, snapshot.capabilities && snapshot.capabilities.data_channel ? badge(_('可用'), 'ok') : badge(_('未安装'), 'warn')) ]),
-			E('tr', {}, [ E('td', {}, _('游戏流量匹配')), E('td', {}, selectedRows.length ? badge(_('规则已选择'), 'info') : badge(_('未配置'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('服务端域名规则')), E('td', {}, hasProviderDomainHint ? badge(_('已载入'), 'info') : badge(_('无'), 'idle')) ]),
+			E('tr', {}, [ E('td', {}, _('游戏流量匹配')), E('td', {}, hasRouteHint ? badge(hasProviderHint ? _('服务端规则已载入') : _('内置规则已选择'), 'info') : badge(_('未配置'), 'idle')) ]),
 			E('tr', {}, [ E('td', {}, _('流量路由')), E('td', {}, traffic.accelerating ? badge(_('已接管'), 'ok') : badge(_('未启用'), 'idle')) ])
 		]))
 	]);
@@ -656,7 +675,7 @@ function renderMatchStatus() {
 	if (!status.available) {
 		content = E('div', { 'class': 'bba-callout' }, status.error || _('实时匹配不可用'));
 	} else if (!status.hints_available) {
-		content = E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前所选目录没有可安全用于本地端口识别的提示；请先获取服务端 profile 再启动。'));
+		content = E('div', { 'class': 'bba-callout bba-callout-info' }, _('当前没有可用于流量接管的规则；请先获取服务端 profile，或选择 Steam/CS2 内置规则。'));
 	} else if (!rows.length) {
 		content = E('div', { 'class': 'bba-empty' }, _('暂未发现命中的游戏流量。打开游戏并进入联网/匹配页面后刷新。'));
 	} else {
