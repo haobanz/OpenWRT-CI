@@ -549,6 +549,12 @@ static int run_udp_roundtrip_case(bool native_bolt)
         if (!channel.transport)
             goto out;
     }
+    if (!udp_channel_ready(&channel))
+        goto out;
+    channel.bound = false;
+    if (udp_channel_ready(&channel))
+        goto out;
+    channel.bound = true;
     if (fake_pair(pair) != 0)
         goto out;
     flows[0].active = true;

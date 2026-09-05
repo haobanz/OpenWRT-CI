@@ -88,7 +88,18 @@ HTTP 301 from a public target through the provider node; the production UDP
 send/parser path returned two DNS answers with matching session and endpoints.
 The client declares the observed classic compatibility version `1.0.0.0`;
 declaring `5.0.2.64` selects a different BoltNext UDP protocol. The router's
-actual Steam/CS2 TPROXY workflow still needs an on-device acceptance run.
+CS2 gameplay latency and packet loss still need an on-device acceptance run.
+
+On 2026-09-06, an NN6000 v2 on kernel 6.18.44 completed bounded LAN-device
+TPROXY tests after integration fixes for the `coreutils-stat` dependency,
+explicit IPv4 nft TPROXY syntax, default-port normalization, and native UDP
+flow allocation. TCP returned HTTP 301; UDP DNS returned two answers, with
+both probes counted in the actual prerouting chain. Steam connections matched
+the selected rules. The relay used about 4.2 MiB RSS during this test, which
+is not a throughput or gameplay benchmark. OpenClash was restored after
+testing; installed but stopped daed/dae stayed stopped. Their running-service
+stop/restore paths are covered by synthetic tests but have not been exercised
+with a live daed/dae configuration.
 
 ## Usage
 

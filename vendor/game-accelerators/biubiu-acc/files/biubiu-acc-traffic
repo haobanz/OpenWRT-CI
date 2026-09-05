@@ -10,6 +10,7 @@ RUNTIME_ROOT='/tmp/biubiu-acc'
 RUNTIME_FILE='/etc/biubiu-acc/runtime.json'
 PID_FILE="$RUNTIME_ROOT/engine.pid"
 STATE_FILE="$RUNTIME_ROOT/traffic.json"
+PROXY_STATE_FILE="$RUNTIME_ROOT/proxies.json"
 LOG_FILE='/var/log/biubiu-acc/engine.log'
 NFT_FAMILY='inet'
 NFT_TABLE='biubiu_acc'
@@ -19,6 +20,7 @@ TCP_PORT='18080'
 UDP_PORT='18081'
 MAX_PROFILE_DOMAIN_RULES=128
 MAX_PROFILE_RULES=2048
+PROXY_WAIT_ATTEMPTS=31
 
 umask 077
 
@@ -286,10 +288,6 @@ engine_running() {
 	case "$command_line" in *'/usr/bin/biubiu-accd'*) kill -0 "$pid" 2>/dev/null ;; *) return 1 ;; esac
 }
 
-openclash_running() {
-	pgrep -f '(^|/)(mihomo|clash|clash_meta|openclash)' >/dev/null 2>&1
-}
-
 write_state() {
 	local accelerating="$1" openclash_was_running="$2" message="$3" temp
 	temp="$STATE_FILE.$$"
@@ -302,6 +300,291 @@ write_state() {
 	json_dump > "$temp"
 	chmod 0600 "$temp"
 	mv -f "$temp" "$STATE_FILE"
+}
+
+# Keep the conflict surface deliberately small.  Each init path is fixed here so
+# a corrupted runtime state cannot choose an arbitrary command to execute.  The
+# process guards deliberately do not require `init running`: OpenClash can run
+# outside procd, while its init script still owns normal stop/start cleanup.
+proxy_service_running() {
+	case "$1" in
+		openclash)
+			pidof mihomo clash clash_meta >/dev/null 2>&1
+			;;
+		daed)
+			pidof daed daed-guard >/dev/null 2>&1
+			;;
+		dae)
+			pidof dae >/dev/null 2>&1
+			;;
+		*) return 1 ;;
+	esac
+}
+
+proxy_wait_tick() {
+	sleep 1
+}
+
+proxy_wait_for_running() {
+	local service="$1" attempts=0
+	while [ "$attempts" -lt "$PROXY_WAIT_ATTEMPTS" ]; do
+		proxy_service_running "$service" && return 0
+		attempts=$((attempts + 1))
+		[ "$attempts" -lt "$PROXY_WAIT_ATTEMPTS" ] && proxy_wait_tick
+	done
+	return 1
+}
+
+proxy_wait_for_stopped() {
+	local service="$1" attempts=0
+	while [ "$attempts" -lt "$PROXY_WAIT_ATTEMPTS" ]; do
+		proxy_service_running "$service" || return 0
+		attempts=$((attempts + 1))
+		[ "$attempts" -lt "$PROXY_WAIT_ATTEMPTS" ] && proxy_wait_tick
+	done
+	return 1
+}
+
+proxy_service_stop() {
+	case "$1" in
+		openclash) /etc/init.d/openclash stop >/dev/null 2>&1 ;;
+		daed) /etc/init.d/daed stop >/dev/null 2>&1 ;;
+		dae) /etc/init.d/dae stop >/dev/null 2>&1 ;;
+		*) return 1 ;;
+	esac
+}
+
+proxy_service_start() {
+	case "$1" in
+		openclash) /etc/init.d/openclash start >/dev/null 2>&1 ;;
+		daed) /etc/init.d/daed start >/dev/null 2>&1 ;;
+		dae) /etc/init.d/dae start >/dev/null 2>&1 ;;
+		*) return 1 ;;
+	esac
+}
+
+proxy_state_value() {
+	local key value
+	case "$1:$2" in
+		openclash:was_running) key='openclash_was_running' ;;
+		openclash:stop_intent) key='openclash_stop_intent' ;;
+		openclash:stopped) key='openclash_stopped' ;;
+		daed:was_running) key='daed_was_running' ;;
+		daed:stop_intent) key='daed_stop_intent' ;;
+		daed:stopped) key='daed_stopped' ;;
+		dae:was_running) key='dae_was_running' ;;
+		dae:stop_intent) key='dae_stop_intent' ;;
+		dae:stopped) key='dae_stopped' ;;
+		*) return 1 ;;
+	esac
+	[ -f "$PROXY_STATE_FILE" ] && [ ! -L "$PROXY_STATE_FILE" ] || {
+		printf '0\n'
+		return 0
+	}
+	value="$(jsonfilter -i "$PROXY_STATE_FILE" -e "@.$key" 2>/dev/null | head -n 1)"
+	case "$value" in 1|true) printf '1\n' ;; *) printf '0\n' ;; esac
+}
+
+proxy_state_load() {
+	PROXY_OC_WAS="$(proxy_state_value openclash was_running)"
+	PROXY_OC_INTENT="$(proxy_state_value openclash stop_intent)"
+	PROXY_OC_STOPPED="$(proxy_state_value openclash stopped)"
+	PROXY_DAED_WAS="$(proxy_state_value daed was_running)"
+	PROXY_DAED_INTENT="$(proxy_state_value daed stop_intent)"
+	PROXY_DAED_STOPPED="$(proxy_state_value daed stopped)"
+	PROXY_DAE_WAS="$(proxy_state_value dae was_running)"
+	PROXY_DAE_INTENT="$(proxy_state_value dae stop_intent)"
+	PROXY_DAE_STOPPED="$(proxy_state_value dae stopped)"
+}
+
+proxy_state_write() {
+	local temp
+	[ ! -L "$PROXY_STATE_FILE" ] || return 1
+	mkdir -p "$RUNTIME_ROOT" || return 1
+	chmod 0700 "$RUNTIME_ROOT" || return 1
+	temp="$PROXY_STATE_FILE.$$"
+	json_init
+	json_add_int version 1
+	json_add_boolean openclash_was_running "$PROXY_OC_WAS"
+	json_add_boolean openclash_stop_intent "$PROXY_OC_INTENT"
+	json_add_boolean openclash_stopped "$PROXY_OC_STOPPED"
+	json_add_boolean daed_was_running "$PROXY_DAED_WAS"
+	json_add_boolean daed_stop_intent "$PROXY_DAED_INTENT"
+	json_add_boolean daed_stopped "$PROXY_DAED_STOPPED"
+	json_add_boolean dae_was_running "$PROXY_DAE_WAS"
+	json_add_boolean dae_stop_intent "$PROXY_DAE_INTENT"
+	json_add_boolean dae_stopped "$PROXY_DAE_STOPPED"
+	json_dump > "$temp" || {
+		rm -f "$temp"
+		return 1
+	}
+	chmod 0600 "$temp" || {
+		rm -f "$temp"
+		return 1
+	}
+	mv -f "$temp" "$PROXY_STATE_FILE"
+}
+
+proxy_state_seed_legacy() {
+	local was_running
+	if [ -e "$PROXY_STATE_FILE" ] || [ -L "$PROXY_STATE_FILE" ]; then
+		return 0
+	fi
+	was_running="$(jsonfilter -i "$STATE_FILE" -e '@.openclash_was_running' 2>/dev/null | head -n 1)"
+	case "$was_running" in 1|true) ;; *) return 0 ;; esac
+	PROXY_OC_WAS=1
+	PROXY_OC_INTENT=0
+	PROXY_OC_STOPPED=1
+	PROXY_DAED_WAS=0
+	PROXY_DAED_INTENT=0
+	PROXY_DAED_STOPPED=0
+	PROXY_DAE_WAS=0
+	PROXY_DAE_INTENT=0
+	PROXY_DAE_STOPPED=0
+	proxy_state_write
+}
+
+proxy_state_mark_stop_intent() {
+	proxy_state_load
+	case "$1" in
+		openclash) PROXY_OC_WAS=1; PROXY_OC_INTENT=1 ;;
+		daed) PROXY_DAED_WAS=1; PROXY_DAED_INTENT=1 ;;
+		dae) PROXY_DAE_WAS=1; PROXY_DAE_INTENT=1 ;;
+		*) return 1 ;;
+	esac
+	proxy_state_write
+}
+
+proxy_state_mark_stopped() {
+	proxy_state_load
+	case "$1" in
+		openclash) PROXY_OC_WAS=1; PROXY_OC_INTENT=0; PROXY_OC_STOPPED=1 ;;
+		daed) PROXY_DAED_WAS=1; PROXY_DAED_INTENT=0; PROXY_DAED_STOPPED=1 ;;
+		dae) PROXY_DAE_WAS=1; PROXY_DAE_INTENT=0; PROXY_DAE_STOPPED=1 ;;
+		*) return 1 ;;
+	esac
+	proxy_state_write
+}
+
+proxy_state_clear_service() {
+	proxy_state_load
+	case "$1" in
+		openclash) PROXY_OC_WAS=0; PROXY_OC_INTENT=0; PROXY_OC_STOPPED=0 ;;
+		daed) PROXY_DAED_WAS=0; PROXY_DAED_INTENT=0; PROXY_DAED_STOPPED=0 ;;
+		dae) PROXY_DAE_WAS=0; PROXY_DAE_INTENT=0; PROXY_DAE_STOPPED=0 ;;
+		*) return 1 ;;
+	esac
+	proxy_state_write
+}
+
+proxy_state_service_stopped() {
+	case "$1" in
+		openclash) [ "$(proxy_state_value openclash stopped)" = 1 ] ;;
+		daed) [ "$(proxy_state_value daed stopped)" = 1 ] ;;
+		dae) [ "$(proxy_state_value dae stopped)" = 1 ] ;;
+		*) return 1 ;;
+	esac
+}
+
+proxy_state_has_pending() {
+	proxy_state_service_stopped openclash ||
+		proxy_state_service_stopped daed ||
+		proxy_state_service_stopped dae
+}
+
+# An interruption after init stop but before the post-stop write leaves an
+# intent.  Reconcile it with the exact service guard before attempting recovery.
+proxy_state_reconcile_intents() {
+	local changed=0
+	proxy_state_load
+	if [ "$PROXY_OC_WAS:$PROXY_OC_INTENT:$PROXY_OC_STOPPED" = '1:1:0' ]; then
+		if proxy_service_running openclash; then PROXY_OC_INTENT=0; else PROXY_OC_INTENT=0; PROXY_OC_STOPPED=1; fi
+		changed=1
+	fi
+	if [ "$PROXY_DAED_WAS:$PROXY_DAED_INTENT:$PROXY_DAED_STOPPED" = '1:1:0' ]; then
+		if proxy_service_running daed; then PROXY_DAED_INTENT=0; else PROXY_DAED_INTENT=0; PROXY_DAED_STOPPED=1; fi
+		changed=1
+	fi
+	if [ "$PROXY_DAE_WAS:$PROXY_DAE_INTENT:$PROXY_DAE_STOPPED" = '1:1:0' ]; then
+		if proxy_service_running dae; then PROXY_DAE_INTENT=0; else PROXY_DAE_INTENT=0; PROXY_DAE_STOPPED=1; fi
+		changed=1
+	fi
+	[ "$changed" -eq 0 ] || proxy_state_write
+}
+
+proxy_state_openclash_marker() {
+	[ "$(proxy_state_value openclash stopped)" = 1 ] && printf '1\n' || printf '0\n'
+}
+
+restore_proxy_services() {
+	local service failed=0
+	for service in "$@"; do
+		case "$service" in openclash|daed|dae) ;; *) continue ;; esac
+		proxy_state_service_stopped "$service" || continue
+		if proxy_service_running "$service"; then
+			proxy_state_clear_service "$service" || failed=1
+			continue
+		fi
+		proxy_service_start "$service" || true
+		if proxy_wait_for_running "$service"; then
+			proxy_state_clear_service "$service" || failed=1
+		else
+			logger -t biubiu-acc "$service restore failed"
+			failed=1
+		fi
+	done
+	if [ "$failed" -eq 0 ] && ! proxy_state_has_pending; then
+		rm -f "$PROXY_STATE_FILE"
+	fi
+	return "$failed"
+}
+
+restore_pending_proxies() {
+	proxy_state_seed_legacy || return 1
+	proxy_state_reconcile_intents || return 1
+	restore_proxy_services openclash daed dae || true
+	if proxy_state_has_pending; then
+		return 1
+	fi
+	rm -f "$PROXY_STATE_FILE"
+}
+
+stop_conflicting_proxies() {
+	local mode="$1" service stop_status still_running
+	STOPPED_PROXY_SERVICES=''
+	proxy_state_seed_legacy || return 1
+	for service in openclash daed dae; do
+		proxy_service_running "$service" || continue
+		[ "$mode" = exclusive ] || {
+			printf '%s\n' "$service is running; choose exclusive conflict mode first" >&2
+			return 1
+		}
+		proxy_state_mark_stop_intent "$service" || {
+			printf '%s\n' "unable to record $service recovery state" >&2
+			restore_proxy_services $STOPPED_PROXY_SERVICES || true
+			return 1
+		}
+		stop_status=0
+		proxy_service_stop "$service" || stop_status=1
+		if proxy_wait_for_stopped "$service"; then
+			still_running=0
+			STOPPED_PROXY_SERVICES="${STOPPED_PROXY_SERVICES}${STOPPED_PROXY_SERVICES:+ }$service"
+			if ! proxy_state_mark_stopped "$service"; then
+				logger -t biubiu-acc "unable to persist $service stop state"
+				proxy_state_reconcile_intents || true
+				restore_proxy_services $STOPPED_PROXY_SERVICES || true
+				return 1
+			fi
+		else
+			still_running=1
+		fi
+		if [ "$stop_status" -ne 0 ] || [ "$still_running" -eq 1 ]; then
+			logger -t biubiu-acc "$service stop failed"
+			proxy_state_reconcile_intents || true
+			restore_proxy_services $STOPPED_PROXY_SERVICES || true
+			return 1
+		fi
+	done
 }
 
 remove_routes() {
@@ -328,41 +611,27 @@ stop_engine() {
 	rm -f "$PID_FILE"
 }
 
-restore_openclash() {
-	local was_running
-	was_running="$(jsonfilter -i "$STATE_FILE" -e '@.openclash_was_running' 2>/dev/null | head -n 1)"
-	[ "$was_running" = 1 ] || return 0
-	[ -x /etc/init.d/openclash ] || return 0
-	/etc/init.d/openclash start >/dev/null 2>&1 || logger -t biubiu-acc 'OpenClash restore failed'
-}
-
 stop_all() {
 	stop_engine
 	remove_routes
-	restore_openclash
+	if ! restore_pending_proxies; then
+		write_state 0 "$(proxy_state_openclash_marker)" 'proxy restore failed'
+		return 1
+	fi
 	rm -f "$STATE_FILE"
 }
 
 reload_all() {
-	local openclash_was_running
-	openclash_was_running="$(jsonfilter -i "$STATE_FILE" -e '@.openclash_was_running' 2>/dev/null | head -n 1)"
-	case "$openclash_was_running" in 1) ;; *) openclash_was_running=0 ;; esac
-	# Keep the ownership marker while replacing nft rules and the engine. This
-	# avoids restoring OpenClash in the middle of an in-place channel renewal.
+	# Keep recovery ownership while replacing nft rules and the engine.  A channel
+	# renewal must never bring another proxy back before acceleration is ready.
+	proxy_state_seed_legacy || return 1
 	stop_engine
 	remove_routes
-	if start_all; then
-		[ "$openclash_was_running" -eq 1 ] && write_state 1 1 'running'
-		return 0
-	fi
-	if [ "$openclash_was_running" -eq 1 ] && [ -x /etc/init.d/openclash ]; then
-		/etc/init.d/openclash start >/dev/null 2>&1 || true
-	fi
-	return 1
+	start_all
 }
 
 start_all() {
-	local scope target_ip openclash_mode openclash_was_running selector
+	local scope target_ip openclash_mode selector log_dir
 	local nft_script pid rule rule_protocol cidr ports set_name ips
 
 	[ "$(id -u)" = 0 ] || {
@@ -408,29 +677,18 @@ start_all() {
 		*) printf '%s\n' 'invalid traffic scope' >&2; return 1 ;;
 	esac
 	openclash_mode="$(config_value openclash_mode exclusive)"
-	openclash_was_running=0
-	if openclash_running; then
-		[ "$openclash_mode" = exclusive ] || {
-			printf '%s\n' 'OpenClash is running; choose exclusive conflict mode first' >&2
-			return 1
-		}
-		openclash_was_running=1
-		[ -x /etc/init.d/openclash ] && /etc/init.d/openclash stop >/dev/null 2>&1 || {
-			printf '%s\n' 'unable to stop OpenClash for exclusive acceleration' >&2
-			return 1
-		}
-	fi
+	stop_conflicting_proxies "$openclash_mode" || return 1
 	remove_routes
 	if ! ip rule add fwmark "$MARK" table "$ROUTE_TABLE" 2>/dev/null && \
 		! ip rule list | grep -Fq "fwmark $MARK"; then
 		printf '%s\n' 'unable to install policy rule' >&2
-		[ "$openclash_was_running" -eq 1 ] && /etc/init.d/openclash start >/dev/null 2>&1 || true
+		restore_proxy_services $STOPPED_PROXY_SERVICES || true
 		return 1
 	fi
 	if ! ip route add local 0.0.0.0/0 dev lo table "$ROUTE_TABLE" 2>/dev/null && \
 		! ip route show table "$ROUTE_TABLE" | grep -Fq 'local 0.0.0.0/0 dev lo'; then
 		remove_routes
-		[ "$openclash_was_running" -eq 1 ] && /etc/init.d/openclash start >/dev/null 2>&1 || true
+		restore_proxy_services $STOPPED_PROXY_SERVICES || true
 		printf '%s\n' 'unable to install transparent route' >&2
 		return 1
 	fi
@@ -446,42 +704,43 @@ add element $NFT_FAMILY $NFT_TABLE $set_name { $ips }"
 		fi
 		if [ "$ports" = '*' ]; then
 			nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr @$set_name $rule_protocol tproxy to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr @$set_name meta l4proto $rule_protocol tproxy ip to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
 		else
 			nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr @$set_name $rule_protocol dport { $ports } tproxy to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr @$set_name $rule_protocol dport { $ports } tproxy ip to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
 		fi
 	done <<EOF
 $profile_domain_specs
 EOF
 	if [ -n "$tcp_ports" ]; then
 		nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector tcp dport { $tcp_ports } tproxy to :$TCP_PORT meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector tcp dport { $tcp_ports } tproxy ip to :$TCP_PORT meta mark set $MARK accept"
 	fi
 	if [ -n "$udp_ports" ]; then
 		nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector udp dport { $udp_ports } tproxy to :$UDP_PORT meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector udp dport { $udp_ports } tproxy ip to :$UDP_PORT meta mark set $MARK accept"
 	fi
 	while IFS='|' read -r rule_protocol cidr ports; do
 		[ -n "$rule_protocol" ] || continue
 		if [ "$ports" = '*' ]; then
 			nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr $cidr $rule_protocol tproxy to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr $cidr meta l4proto $rule_protocol tproxy ip to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
 		else
 			nft_script="${nft_script}
-add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr $cidr $rule_protocol dport { $ports } tproxy to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
+add rule $NFT_FAMILY $NFT_TABLE prerouting $selector ip daddr $cidr $rule_protocol dport { $ports } tproxy ip to :$( [ "$rule_protocol" = tcp ] && printf '%s' "$TCP_PORT" || printf '%s' "$UDP_PORT" ) meta mark set $MARK accept"
 		fi
 	done <<EOF
 $profile_rule_specs
 EOF
 	if ! printf '%s\n' "$nft_script" | nft -f - >/dev/null 2>&1; then
 		remove_routes
-		[ "$openclash_was_running" -eq 1 ] && /etc/init.d/openclash start >/dev/null 2>&1 || true
+		restore_proxy_services $STOPPED_PROXY_SERVICES || true
 		printf '%s\n' 'unable to install nftables transparent rules' >&2
 		return 1
 	fi
-	mkdir -p "$RUNTIME_ROOT" /var/log/biubiu-acc
-	chmod 0700 "$RUNTIME_ROOT" /var/log/biubiu-acc
+	log_dir="${LOG_FILE%/*}"
+	mkdir -p "$RUNTIME_ROOT" "$log_dir"
+	chmod 0700 "$RUNTIME_ROOT" "$log_dir"
 	: > "$LOG_FILE"
 	chmod 0600 "$LOG_FILE"
 	"$ENGINE" --runtime "$RUNTIME_FILE" --tcp-port "$TCP_PORT" --udp-port "$UDP_PORT" \
@@ -493,18 +752,20 @@ EOF
 	if ! kill -0 "$pid" 2>/dev/null; then
 		stop_engine
 		remove_routes
-		[ "$openclash_was_running" -eq 1 ] && /etc/init.d/openclash start >/dev/null 2>&1 || true
+		restore_proxy_services $STOPPED_PROXY_SERVICES || true
 		printf '%s\n' 'biubiu-accd failed to start; see engine.log' >&2
 		return 1
 	fi
-	write_state 1 "$openclash_was_running" 'running'
+	write_state 1 "$(proxy_state_openclash_marker)" 'running'
 }
 
 case "${1:-}" in
 	start)
-		stop_all
+		proxy_state_seed_legacy || exit 1
+		stop_engine
+		remove_routes
 		start_all || {
-			write_state 0 0 'start failed'
+			write_state 0 "$(proxy_state_openclash_marker)" 'start failed'
 			exit 1
 		}
 		;;
@@ -513,7 +774,7 @@ case "${1:-}" in
 		;;
 	reload)
 		reload_all || {
-			write_state 0 0 'reload failed'
+			write_state 0 "$(proxy_state_openclash_marker)" 'reload failed'
 			exit 1
 		}
 		;;

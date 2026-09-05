@@ -82,7 +82,7 @@ int main(void)
         "{\"proType\":\"UDP\",\"ip\":\"127.0.0.6\",\"port\":\"2206\",\"encryption\":false}]}}]},"
         "\"routerProfile\":{\"defaultOutboundId\":\"main\",\"routeList\":["
         "{\"id\":1,\"mode\":\"bolt\",\"outboundId\":\"main\",\"cidrIp\":\"203.0.113.7/24\",\"protocol\":3,\"port\":27015},"
-        "{\"id\":2,\"mode\":\"bolt\",\"outboundId\":\"main\",\"bypathId\":\"bypath\",\"cidrList\":[\"198.51.100.0/24\"],\"protocol\":2,\"portList\":[\"27000~27100\"]},"
+        "{\"id\":2,\"mode\":\"bolt\",\"outboundId\":\"main\",\"bypathId\":\"bypath\",\"cidrList\":[\"198.51.100.0/24\"],\"protocol\":2,\"port\":0,\"portList\":[\"27000~27100\",0,\"27000-27100\"]},"
         "{\"id\":3,\"mode\":\"bolt\",\"outboundId\":\"main\",\"cidrIp\":\"192.0.2.1\",\"protocol\":null,\"port\":0}]}}}";
     static const char authorization_json[] =
         "{\"data\":{\"signalSessionId\":\"test-signal-session\",\"channelAuthList\":["
@@ -166,6 +166,27 @@ int main(void)
         test_integer_member(third_route, "protocol", &protocol) != 0 || protocol != 0 ||
         stat(runtime_path, &info) != 0 || (info.st_mode & (S_IRWXG | S_IRWXO)))
         goto out;
+    {
+        json_object *port_list = object_member(second_route, "ports", json_type_array);
+        json_object *rules = object_member(runtime, "udpRules", json_type_array);
+        bool found = false;
+        size_t index;
+
+        if (!port_list || json_object_array_length(port_list) != 1 ||
+            strcmp(json_object_get_string(json_object_array_get_idx(port_list, 0)),
+                   "27000-27100") || !rules)
+            goto out;
+        for (index = 0; index < json_object_array_length(rules); index++) {
+            const char *rule = json_object_get_string(json_object_array_get_idx(rules, index));
+
+            if (!strcmp(rule, "198.51.100.0/24|27000-27100"))
+                found = true;
+            if (strstr(rule, "*,") || strstr(rule, ",*"))
+                goto out;
+        }
+        if (!found)
+            goto out;
+    }
     nested_authorization = json_tokener_parse(authorization_json);
     {
         json_object *data = object_member(nested_authorization, "data", json_type_object);

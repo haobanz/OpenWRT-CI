@@ -712,7 +712,7 @@ function showProfileModal() {
 		[ 'debug', 'Debug' ], [ 'info', 'Info' ], [ 'warn', 'Warn' ], [ 'error', 'Error' ]
 	], config.log_level || 'info');
 	const openclashMode = select([
-		[ 'exclusive', _('独占：启动加速时自动停止 OpenClash') ]
+		[ 'exclusive', _('独占：暂停 OpenClash / daed / dae') ]
 	], config.openclash_mode || 'exclusive');
 	game.setAttribute('inputmode', 'numeric');
 	area.setAttribute('inputmode', 'numeric');
@@ -723,7 +723,7 @@ function showProfileModal() {
 			[ _('区服 ID'), area ],
 			[ _('平台 ID'), platform ],
 			[ _('日志级别'), logLevel ],
-			[ _('OpenClash 冲突策略'), openclashMode ]
+			[ _('代理冲突策略'), openclashMode ]
 		]),
 		modalActions([
 			button(_('取消'), 'cbi-button-neutral', ui.hideModal),
@@ -961,7 +961,7 @@ function renderAcceleration() {
 			E('tr', {}, [ E('td', {}, _('区服 ID')), E('td', { 'class': 'bba-code' }, effectiveAreaId) ]),
 			E('tr', {}, [ E('td', {}, _('平台 ID')), E('td', { 'class': 'bba-code' }, effectivePlatformId) ]),
 			E('tr', {}, [ E('td', {}, _('日志级别')), E('td', {}, config.log_level || 'info') ]),
-			E('tr', {}, [ E('td', {}, _('OpenClash 冲突策略')), E('td', {}, config.openclash_mode || 'exclusive') ])
+			E('tr', {}, [ E('td', {}, _('代理冲突策略')), E('td', {}, config.openclash_mode === 'exclusive' ? _('独占：OpenClash / daed / dae') : (config.openclash_mode || 'exclusive')) ])
 		])),
 		section(_('服务端控制'), [
 			controlButton(_('刷新官方目录'), 'game_list', !session.authenticated || !key.cached),

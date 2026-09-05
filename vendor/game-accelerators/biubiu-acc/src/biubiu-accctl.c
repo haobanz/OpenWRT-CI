@@ -5307,7 +5307,7 @@ static int run_pc_profile_request(const char *session_file, const char *key_file
     const char *strategy_id;
     uint64_t game_id;
     uint64_t area_id;
-    uint64_t speedup_model_id;
+    uint64_t speedup_model_id = 0;
     int status = 1;
 
     if (argument_count != 2 ||
@@ -6078,6 +6078,8 @@ static int append_profile_route_selector(json_object *cidr_rules,
     return append_profile_route_cidrs(cidr_rules, route, ports);
 }
 
+static int append_runtime_route_ports(json_object *output, json_object *route);
+
 static int append_profile_route(json_object *tcp_rules, json_object *udp_rules,
                                 json_object *tcp_domains,
                                 json_object *udp_domains, json_object *route,
@@ -6085,12 +6087,11 @@ static int append_profile_route(json_object *tcp_rules, json_object *udp_rules,
 {
     const char *mode = string_member(route, "mode");
     const char *route_outbound_id;
-    json_object *port_list;
-    json_object *port_value = NULL;
+    json_object *port_list = NULL;
     char ports[256] = "";
-    size_t port_count = 0;
     size_t index;
     int64_t protocol = 0;
+    int status = -1;
 
     if (!mode || strcasecmp(mode, "bolt") != 0)
         return 0;
@@ -6101,53 +6102,36 @@ static int append_profile_route(json_object *tcp_rules, json_object *udp_rules,
     }
     if (profile_route_protocol(route, &protocol) != 0)
         return -1;
-    if (json_object_object_get_ex(route, "port", &port_value)) {
-        char port[32];
+    port_list = json_object_new_array();
+    if (!port_list || append_runtime_route_ports(port_list, route) != 0)
+        goto out;
+    /* Steering and channel selection must interpret default port 0 identically. */
+    for (index = 0; index < json_object_array_length(port_list); index++) {
+        const char *port = json_object_get_string(json_object_array_get_idx(port_list, index));
+        size_t current_length = strlen(ports);
 
-        if (normalize_route_port(port_value, port, sizeof(port)) != 0)
-            return -1;
-        snprintf(ports, sizeof(ports), "%s", port);
-        port_count = 1;
+        if (current_length + (current_length ? 1 : 0) + strlen(port) >= sizeof(ports))
+            goto out;
+        if (current_length)
+            ports[current_length++] = ',';
+        snprintf(ports + current_length, sizeof(ports) - current_length, "%s", port);
     }
-    port_list = object_member(route, "portList", json_type_array);
-    if (port_list) {
-        for (index = 0; index < json_object_array_length(port_list); index++) {
-            char port[32];
-            size_t current_length;
-
-            if (normalize_route_port(json_object_array_get_idx(port_list, index),
-                                     port, sizeof(port)) != 0)
-                return -1;
-            if (!strcmp(port, "*")) {
-                snprintf(ports, sizeof(ports), "*");
-                port_count = 1;
-                break;
-            }
-            current_length = strlen(ports);
-            if (current_length && current_length + 1 >= sizeof(ports))
-                return -1;
-            if (current_length)
-                ports[current_length++] = ',';
-            if (current_length + strlen(port) >= sizeof(ports))
-                return -1;
-            snprintf(ports + current_length, sizeof(ports) - current_length,
-                     "%s", port);
-            port_count++;
-        }
-    }
-    if (!port_count)
+    if (!ports[0])
         snprintf(ports, sizeof(ports), "*");
     if (protocol == 0 || protocol == 6) {
         if (append_profile_route_selector(tcp_rules, tcp_domains, route,
                                           ports) != 0)
-            return -1;
+            goto out;
     }
     if (protocol == 0 || protocol == 17) {
         if (append_profile_route_selector(udp_rules, udp_domains, route,
                                           ports) != 0)
-            return -1;
+            goto out;
     }
-    return 0;
+    status = 0;
+out:
+    json_object_put(port_list);
+    return status;
 }
 
 static int build_profile_route_rules(json_object *profile, const char *outbound_id,
@@ -6207,6 +6191,9 @@ static int run_profile_route_self_test(void)
         goto out;
     json_object_array_add(ports, json_object_new_int(443));
     json_object_array_add(ports, json_object_new_string("27015~27050"));
+    json_object_array_add(ports, json_object_new_int(0));
+    json_object_array_add(ports, json_object_new_int(443));
+    json_object_object_add(route, "port", json_object_new_int(0));
     json_object_object_add(route, "mode", json_object_new_string("bolt"));
     json_object_object_add(route, "outboundId",
                            json_object_new_string("accelerated"));
@@ -6898,30 +6885,43 @@ static int append_runtime_route_cidrs(json_object *output, json_object *route)
     return 0;
 }
 
+static int append_normalized_route_port(json_object *output, json_object *value)
+{
+    char normalized[32];
+    size_t index;
+
+    if (!value || json_object_is_type(value, json_type_null))
+        return 0;
+    if (normalize_route_port(value, normalized, sizeof(normalized)) != 0)
+        return -1;
+    if (!strcmp(normalized, "*"))
+        return 0;
+    for (index = 0; index < json_object_array_length(output); index++) {
+        const char *existing = json_object_get_string(json_object_array_get_idx(output, index));
+
+        if (!strcmp(existing, normalized))
+            return 0;
+    }
+    return json_object_array_add(output, json_object_new_string(normalized));
+}
+
 static int append_runtime_route_ports(json_object *output, json_object *route)
 {
-    json_object *list = object_member(route, "portList", json_type_array);
+    json_object *list = NULL;
     json_object *single = NULL;
     size_t index;
 
     if (json_object_object_get_ex(route, "port", &single) &&
-        json_object_get_int64(single) != 0) {
-        char normalized[32];
-
-        if (normalize_route_port(single, normalized, sizeof(normalized)) != 0)
-            return -1;
-        json_object_array_add(output, json_object_new_string(normalized));
-    }
-    if (!list)
+        append_normalized_route_port(output, single) != 0)
+        return -1;
+    if (!json_object_object_get_ex(route, "portList", &list) ||
+        json_object_is_type(list, json_type_null))
         return 0;
+    if (!json_object_is_type(list, json_type_array))
+        return -1;
     for (index = 0; index < json_object_array_length(list); index++) {
-        char normalized[32];
-
-        if (normalize_route_port(json_object_array_get_idx(list, index),
-                                 normalized, sizeof(normalized)) != 0)
+        if (append_normalized_route_port(output, json_object_array_get_idx(list, index)) != 0)
             return -1;
-        if (strcmp(normalized, "*"))
-            json_object_array_add(output, json_object_new_string(normalized));
     }
     return 0;
 }

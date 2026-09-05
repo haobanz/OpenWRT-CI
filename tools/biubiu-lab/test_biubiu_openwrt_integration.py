@@ -38,6 +38,7 @@ class OpenWrtIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(path, makefile)
         self.assertIn("/etc/config/biubiu-acc", makefile)
+        self.assertIn("+coreutils-stat", makefile)
 
     def test_sms_code_is_not_forwarded_in_process_arguments(self) -> None:
         manager = (CORE / "files/biubiu-acc-manager").read_text()
@@ -55,7 +56,7 @@ class OpenWrtIntegrationTests(unittest.TestCase):
 
     def test_official_picker_requires_matching_control_package(self) -> None:
         makefile = (LUCI / "Makefile").read_text()
-        self.assertIn("EXTRA_DEPENDS:=biubiu-acc (>=0.11.0)", makefile)
+        self.assertIn("EXTRA_DEPENDS:=biubiu-acc (>=0.11.0-r2)", makefile)
 
     def test_transport_is_gated_by_authorized_runtime(self) -> None:
         manager = (CORE / "files/biubiu-acc-manager").read_text()

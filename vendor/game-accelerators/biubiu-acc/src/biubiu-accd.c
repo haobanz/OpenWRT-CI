@@ -1993,6 +1993,13 @@ static int find_udp_flow(struct udp_flow *flows, const struct sockaddr_in *clien
     return -1;
 }
 
+static bool udp_channel_ready(const struct bolt_channel *channel)
+{
+    return channel && channel->bound &&
+           (channel->native_bolt ? channel->datagram_fd >= 0 :
+                                   channel->transport != NULL);
+}
+
 static int allocate_udp_flow(struct udp_flow *flows, const struct runtime_config *runtime,
                              const struct sockaddr_in *client,
                              const struct sockaddr_in *target)
@@ -2007,7 +2014,7 @@ static int allocate_udp_flow(struct udp_flow *flows, const struct runtime_config
     if (index == MAX_UDP_FLOWS)
         return -1;
     channel = select_channel(runtime, target, IPPROTO_UDP);
-    if (!channel || !channel->transport)
+    if (!udp_channel_ready(channel))
         return -1;
     reply_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (reply_fd < 0)
@@ -2041,9 +2048,7 @@ static int send_udp_flow_payload(const struct bolt_channel *channel,
     size_t frame_length;
     int status;
 
-    if (!channel || !flow ||
-        (channel->native_bolt ? (!channel->bound || channel->datagram_fd < 0) :
-                                !channel->transport) ||
+    if (!udp_channel_ready(channel) || !flow ||
         payload_length > MAX_FRAME_SIZE - BIUBIU_UDP_TUNNEL_HEADER_SIZE)
         return -1;
     frame = malloc(BIUBIU_UDP_TUNNEL_HEADER_SIZE + payload_length);

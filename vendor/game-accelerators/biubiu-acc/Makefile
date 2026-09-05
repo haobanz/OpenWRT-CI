@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=biubiu-acc
 PKG_VERSION:=0.11.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -15,7 +15,7 @@ define Package/biubiu-acc
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Experimental clean-room biubiu accelerator client
-  DEPENDS:=+ca-bundle +ip-full +jshn +jsonfilter +kmod-nft-tproxy +libcurl +libjson-c +libopenssl +libstdcpp +nftables +uci
+  DEPENDS:=+ca-bundle +coreutils-stat +ip-full +jshn +jsonfilter +kmod-nft-tproxy +libcurl +libjson-c +libopenssl +libstdcpp +nftables +uci
   URL:=https://www.biubiu001.com/
 endef
 

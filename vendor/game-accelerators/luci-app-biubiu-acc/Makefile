@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-biubiu-acc
 PKG_VERSION:=0.10.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=haobanz
 PKG_LICENSE:=MIT
 
@@ -14,7 +14,7 @@ define Package/luci-app-biubiu-acc
   SUBMENU:=3. Applications
   TITLE:=LuCI manager for the clean-room biubiu client
   DEPENDS:=+luci-base +biubiu-acc
-  EXTRA_DEPENDS:=biubiu-acc (>=0.11.0)
+  EXTRA_DEPENDS:=biubiu-acc (>=0.11.0-r2)
   PKGARCH:=all
 endef
 
